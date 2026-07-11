@@ -105,6 +105,9 @@ class GameEngine:
             if not self._is_busy(cell):
                 self._selected = cell
             return
+        
+        if self._active_moves:
+            return  # a move is already in flight: no concurrent moves allowed
 
         if not self._is_legal_move(piece, start, cell):
             return  # illegal target: keep current selection
