@@ -109,7 +109,6 @@ class GameEngine:
         if not self._is_legal_move(piece, start, cell):
             return  # illegal target: keep current selection
 
-        self._board.set(*start, self._config.EMPTY_CELL)
         self._active_moves.append(
             Move(piece, start, cell, self._clock + self._config.MOVE_DURATION)
         )
@@ -148,11 +147,13 @@ class GameEngine:
 
     def _settle_move(self, move):
         if self._is_intercepted(move):
+            self._board.set(*move.start, self._config.EMPTY_CELL)
             return
 
         r, c = move.end
         target = self._board.get(r, c)
         if target != self._config.EMPTY_CELL and target[0] == move.piece[0]:
+            self._board.set(*move.start, self._config.EMPTY_CELL)
             return
 
         captured = None if target == self._config.EMPTY_CELL else target
@@ -160,6 +161,7 @@ class GameEngine:
             self._game_over = True
 
         piece = self._promotion_rule.promote(move.piece, r, self._board.height)
+        self._board.set(*move.start, self._config.EMPTY_CELL)
         self._board.set(r, c, piece)
 
     def _is_intercepted(self, move):
