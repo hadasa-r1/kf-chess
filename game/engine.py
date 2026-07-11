@@ -109,9 +109,9 @@ class GameEngine:
         if not self._is_legal_move(piece, start, cell):
             return  # illegal target: keep current selection
 
-        self._active_moves.append(
-            Move(piece, start, cell, self._clock + self._config.MOVE_DURATION)
-        )
+        distance = max(abs(cell[0] - start[0]), abs(cell[1] - start[1]))
+        arrival = self._clock + self._config.MOVE_DURATION * distance
+        self._active_moves.append(Move(piece, start, cell, arrival))
         self._selected = None
 
     def _is_legal_move(self, piece, start, end):

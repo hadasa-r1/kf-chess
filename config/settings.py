@@ -8,7 +8,7 @@ these.
 
 # Rendering / timing (milliseconds)
 CELL_SIZE = 100
-MOVE_DURATION = 1000
+MOVE_DURATION = 1000  # per cell of distance travelled - a 2-cell move takes 2x as long
 JUMP_DURATION = 1000
 
 # Player colors supported by the game
