@@ -17,10 +17,11 @@ rules/     movement_strategy.py   - MovementStrategy interface + MoveContext
            game_conditions.py     - WinCondition / PromotionRule strategies
 realtime/  models.py              - Move / Jump value objects
            real_time_arbiter.py   - RealTimeArbiter (active motions, arrival, capture)
-view/      snapshot.py            - GameSnapshot (read-only DTO for rendering)
-           renderer.py            - GameSnapshot -> text rendering
+model/     piece.py               - PieceColor/PieceKind enums, kind_letter, PieceSnapshot
+board_io/  parser.py              - input parsing + board construction
+           snapshot.py            - GameSnapshot (read-only, piece-based DTO for rendering)
+           board_printer.py       - BoardPrinter (GameSnapshot -> text, piece-based)
 game/      models.py              - MoveResult/JumpResult value objects
-           parser.py              - input parsing + board construction
            board_mapper.py        - BoardMapper (pixel <-> cell coordinate adapter)
            controller.py          - Controller (click/jump translation, selection state)
            engine.py              - GameEngine (application-service coordinator)
@@ -43,8 +44,9 @@ wait -> GameEngine.wait -> RealTimeArbiter.advance_time
         (arrival: interception check, capture, promotion, king-capture reporting;
         the only place Board is ever mutated)
 
-print -> GameEngine.render -> GameEngine.snapshot() -> BoardRenderer
-         (renderer only ever sees a read-only GameSnapshot, never a live Board)
+print -> GameEngine.render -> GameEngine.snapshot() -> BoardPrinter
+         (BoardPrinter only ever sees a read-only GameSnapshot, built from
+         PieceSnapshot data - never a live Board, and never a pre-built grid)
 ```
 
 `RuleEngine` and `RealTimeArbiter` are both injected into `GameEngine`'s
@@ -66,7 +68,7 @@ drive each layer directly instead of going through a full click/wait cycle).
    registered by letter in a `PieceRuleRegistry`
    (`rules/rule_registry.py`). Registering a new kind (e.g. a custom
    "Champion" piece) automatically makes it a legal board token too, since
-   `game/parser.py` derives valid tokens from the registry instead of a
+   `board_io/parser.py` derives valid tokens from the registry instead of a
    fixed string. Win conditions and promotion are likewise pluggable
    strategies (`rules/game_conditions.py`).
 
@@ -77,10 +79,12 @@ drive each layer directly instead of going through a full click/wait cycle).
    all separate; no duplicated logic (e.g. `path_is_clear` is shared by
    Rook/Bishop/Queen); no magic numbers (all constants live in
    `config/settings.py`); the board's internal list-of-lists storage is
-   private and only reachable through its public interface. `BoardRenderer`
+   private and only reachable through its public interface. `BoardPrinter`
    never sees a live `Board` at all - only the read-only `GameSnapshot`
-   DTO `GameEngine.snapshot()` produces, so rendering code has no way to
-   mutate game state even by accident.
+   DTO `GameEngine.snapshot()` produces, built from `PieceSnapshot`
+   entries (`model/piece.py`) rather than board tokens, so rendering code
+   has no way to mutate game state, or even to know the board stores
+   pieces as `"wK"`-style strings internally.
 
 4. **Tests & DI** - `tests/` covers every module. `GameEngine`, `Controller`,
    `RealTimeArbiter` and `main.run` all take their collaborators (board,

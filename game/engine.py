@@ -1,5 +1,5 @@
 from game.models import MoveResult, JumpResult
-from view.snapshot import GameSnapshot
+from board_io.snapshot import GameSnapshot
 
 
 class GameEngine:

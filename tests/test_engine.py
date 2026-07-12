@@ -9,7 +9,7 @@ from game.engine import GameEngine
 from game.controller import Controller
 from game.board_mapper import BoardMapper
 from realtime.real_time_arbiter import RealTimeArbiter
-from view.renderer import BoardRenderer
+from board_io.board_printer import BoardPrinter
 
 
 class NeverEndsWinCondition(WinCondition):
@@ -154,7 +154,7 @@ def test_injected_promotion_rule_overrides_default_behaviour():
 
 def test_render_returns_current_board_text():
     controller, engine, board = make_engine([["wK", "."], [".", "bK"]])
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == "wK .\n. bK"
 
 def test_second_move_is_blocked_while_one_is_in_flight():
@@ -182,7 +182,7 @@ def test_enemy_arrives_after_landing_captures_normally():
     controller.click(50, 150)   # move bR onto wK's square - 3 cells away
 
     engine.wait(3000)
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == ". . . .\nbR . . .\n. . . ."
 
 
@@ -195,7 +195,7 @@ def test_cannot_jump_while_moving():
     controller.jump(50, 50)      # blocked: the source square is busy
 
     engine.wait(1500)
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == ". . wR"
 
 
@@ -208,7 +208,7 @@ def test_airborne_capture_only_enemy():
     controller.click(50, 150)    # try to land on own airborne king - blocked
 
     engine.wait(1000)
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == ". . .\nwK wR .\n. . ."
 
 def test_jump_lands_same_square():
@@ -218,7 +218,7 @@ def test_jump_lands_same_square():
     controller.jump(150, 150)   # wK jumps on its own square
     engine.wait(1000)
 
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == ". . .\n. wK .\n. . ."
 
 
@@ -231,7 +231,7 @@ def test_airborne_piece_captures_arriving_enemy():
     controller.click(50, 150)    # bR tries to move onto wK - 1 cell away
 
     engine.wait(1000)
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == ". . .\nwK . .\n. . ."
 
 
@@ -245,5 +245,5 @@ def test_jump_too_late_does_not_save_piece():
     engine.wait(1000)            # move arrives and captures wK - game over
     controller.jump(50, 150)     # too late: jump is ignored once game is over
 
-    text = engine.render(BoardRenderer())
+    text = engine.render(BoardPrinter())
     assert text == ". . .\nbR . .\n. . ."

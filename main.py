@@ -8,12 +8,12 @@ from config import settings
 from rules.rule_registry import build_default_registry
 from rules.rule_engine import RuleEngine
 from rules.game_conditions import KingCaptureWinCondition, LastRankPromotion
-from game.parser import parse_input, build_board, BoardParseError
+from board_io.parser import parse_input, build_board, BoardParseError
 from game.board_mapper import BoardMapper
 from realtime.real_time_arbiter import RealTimeArbiter
 from game.engine import GameEngine
 from game.controller import Controller
-from view.renderer import BoardRenderer
+from board_io.board_printer import BoardPrinter
 
 
 def run(input_lines, config=settings):
@@ -43,7 +43,7 @@ def run(input_lines, config=settings):
         config=config,
     )
     controller = Controller(engine, BoardMapper(board, config.CELL_SIZE))
-    renderer = BoardRenderer()
+    renderer = BoardPrinter(config.EMPTY_CELL)
 
     for command in commands:
         _dispatch(command, controller, engine, renderer)
