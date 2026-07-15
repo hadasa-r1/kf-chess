@@ -63,7 +63,7 @@ class GameUI:
 
             self._engine.wait(elapsed_ms)
             active_by_start = {move.start: move for move in self._engine.active_moves()}
-            snapshot = self._engine.snapshot()
+            snapshot = self._engine.snapshot(selected=self._controller.selected)
             self._animator.advance(elapsed_ms)
 
             frame = self._draw_frame(snapshot, active_by_start)
@@ -89,11 +89,10 @@ class GameUI:
     def _draw_frame(self, snapshot, active_by_start):
         frame = self._background_frame()
 
-        selected = self._controller.selected
-        if selected is not None:
-            self._draw_selection(frame, selected)
+        if snapshot.selected is not None:
+            self._draw_selection(frame, snapshot.selected)
 
-        for row, cells in enumerate(snapshot.grid):
+        for row, cells in enumerate(snapshot.cells):
             for col, token in enumerate(cells):
                 if token == ".":
                     continue

@@ -14,7 +14,7 @@ from board.loaders import load_text_board, BoardParseError
 from game.board_mapper import BoardMapper
 from game.engine import GameEngine
 from game.controller import Controller
-from UI.view.renderer import BoardRenderer
+from view.renderer import BoardRenderer
 
 
 def run(input_lines, config=settings):

@@ -1,6 +1,6 @@
 from game.models import MoveResult
 from rules.reasons import Reason
-from UI.view.snapshot import GameSnapshot
+from view.snapshot import GameSnapshot
 
 
 class GameEngine:
@@ -97,8 +97,8 @@ class GameEngine:
     def wait(self, dt):
         self._apply_events(self._arbiter.advance_time(dt))
 
-    def snapshot(self):
-        return GameSnapshot.from_board(self._board, self._game_over)
+    def snapshot(self, selected=None):
+        return GameSnapshot.from_board(self._board, self._game_over, selected=selected)
 
     def render(self, renderer):
         self._apply_events(self._arbiter.resolve())
