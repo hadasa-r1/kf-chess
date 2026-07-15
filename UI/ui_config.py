@@ -29,4 +29,7 @@ FOLDER_MAP = {
 STATE_MAP = {
     "idle": "states/idle/sprites",
     "move": "states/move/sprites",
+    "jump": "states/jump/sprites",
+    "short_rest": "states/short_rest/sprites",
+    "long_rest": "states/long_rest/sprites",
 }

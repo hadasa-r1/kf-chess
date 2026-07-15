@@ -11,6 +11,11 @@ CELL_SIZE = 100
 MOVE_DURATION = 1000
 JUMP_DURATION = 1000
 
+# How long a piece must rest before it may act again, depending on what it
+# just did (long_rest after a move, short_rest after a jump).
+MOVE_COOLDOWN_DURATION = 2000
+JUMP_COOLDOWN_DURATION = 1000
+
 # Player colors supported by the game
 COLORS = ("w", "b")
 

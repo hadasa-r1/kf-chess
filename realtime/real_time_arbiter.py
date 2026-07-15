@@ -40,11 +40,13 @@ class RealTimeArbiter:
         self._clock = 0
         self._active_moves = []
         self._active_jumps = []
+        self._cooldown_until = {}  # cell -> clock time its cooldown ends
+        self._cooldown_kind = {}  # cell -> "move" or "jump", whichever caused the cooldown
 
     @property
     def clock(self):
         return self._clock
-    
+
     def active_moves(self):
         return list(self._active_moves)
 
@@ -56,6 +58,15 @@ class RealTimeArbiter:
 
     def is_jumping_on(self, cell):
         return any(jump.cell == cell for jump in self._active_jumps)
+
+    def is_on_cooldown(self, cell):
+        return self._clock < self._cooldown_until.get(cell, -1)
+
+    def cooldown_remaining(self, cell):
+        return max(0, self._cooldown_until.get(cell, self._clock) - self._clock)
+
+    def cooldown_kind(self, cell):
+        return self._cooldown_kind.get(cell) if self.is_on_cooldown(cell) else None
 
     def start_move(self, piece, start, end):
         self._active_moves.append(Move(piece, start, end, self._arrival_clock(start, end)))
@@ -111,6 +122,8 @@ class RealTimeArbiter:
         # returns above, so the mover survives in place in that case.)
         self._board.set(*move.start, self._config.EMPTY_CELL)
         self._board.set(r, c, piece)
+        self._cooldown_until[(r, c)] = move.arrival + self._config.MOVE_COOLDOWN_DURATION
+        self._cooldown_kind[(r, c)] = "move"
         return ArrivalEvent(piece=piece, destination=(r, c), captured=captured)
 
     def _is_intercepted(self, move):
@@ -121,4 +134,11 @@ class RealTimeArbiter:
         )
 
     def _resolve_jumps(self):
-        self._active_jumps = [j for j in self._active_jumps if self._clock < j.end_time]
+        remaining = []
+        for jump in self._active_jumps:
+            if self._clock < jump.end_time:
+                remaining.append(jump)
+            else:
+                self._cooldown_until[jump.cell] = jump.end_time + self._config.JUMP_COOLDOWN_DURATION
+                self._cooldown_kind[jump.cell] = "jump"
+        self._active_jumps = remaining

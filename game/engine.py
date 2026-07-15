@@ -40,12 +40,22 @@ class GameEngine:
     def is_busy(self, cell):
         return self._arbiter.is_moving_from(cell) or self._arbiter.is_jumping_on(cell)
 
+    def cooldown_remaining(self, cell):
+        return self._arbiter.cooldown_remaining(cell)
+
+    def cooldown_kind(self, cell):
+        return self._arbiter.cooldown_kind(cell)
+
     def can_select(self, cell):
         """Whether `cell` can be picked as a move source right now."""
         self._apply_events(self._arbiter.resolve())
         if self._game_over:
             return False
-        return not self.is_busy(cell) and not self._board.is_empty(*cell)
+        return (
+            not self.is_busy(cell)
+            and not self._arbiter.is_on_cooldown(cell)
+            and not self._board.is_empty(*cell)
+        )
 
     def request_move(self, start, end):
         self._apply_events(self._arbiter.resolve())
@@ -53,6 +63,8 @@ class GameEngine:
             return MoveResult(False, Reason.GAME_OVER)
         if self.is_busy(start):
             return MoveResult(False, Reason.BUSY_SOURCE)
+        if self._arbiter.is_on_cooldown(start):
+            return MoveResult(False, Reason.ON_COOLDOWN)
 
         validation = self._rule_engine.validate_move(self._board, start, end)
         if not validation.is_valid:
@@ -74,6 +86,8 @@ class GameEngine:
             return MoveResult(False, Reason.GAME_OVER)
         if self.is_busy(cell):
             return MoveResult(False, Reason.BUSY_CELL)
+        if self._arbiter.is_on_cooldown(cell):
+            return MoveResult(False, Reason.ON_COOLDOWN)
         if self._board.is_empty(*cell):
             return MoveResult(False, Reason.EMPTY_CELL)
 
