@@ -226,11 +226,11 @@ if __name__ == "__main__":  # pragma: no cover
     from game.engine import GameEngine
     from game.controller import Controller
     from UI import ui_config
-    from UI.asset_resolver import AssetResolver
-    from UI.sprites import PieceSprites
-    from UI.piece_state_machine import PieceStateMachine
-    from UI.piece_animator import PieceAnimator
-    from UI.position_resolver import PositionResolver
+    from UI.assets.asset_resolver import AssetResolver
+    from UI.assets.sprites import PieceSprites
+    from UI.rendering.piece_state_machine import PieceStateMachine
+    from UI.rendering.piece_animator import PieceAnimator
+    from UI.rendering.position_resolver import PositionResolver
 
     config = settings
     registry = build_default_registry(config)
