@@ -44,6 +44,9 @@ class RealTimeArbiter:
     @property
     def clock(self):
         return self._clock
+    
+    def active_moves(self):
+        return list(self._active_moves)
 
     def has_active_motion(self):
         return bool(self._active_moves)

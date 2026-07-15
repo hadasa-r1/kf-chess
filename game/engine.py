@@ -1,6 +1,6 @@
 from game.models import MoveResult
 from rules.reasons import Reason
-from view.snapshot import GameSnapshot
+from UI.view.snapshot import GameSnapshot
 
 
 class GameEngine:
@@ -33,6 +33,9 @@ class GameEngine:
     @property
     def clock(self):
         return self._arbiter.clock
+
+    def active_moves(self):
+        return self._arbiter.active_moves()
 
     def is_busy(self, cell):
         return self._arbiter.is_moving_from(cell) or self._arbiter.is_jumping_on(cell)
