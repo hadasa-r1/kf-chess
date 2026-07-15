@@ -31,6 +31,5 @@ EMPTY_CELL = "."
 
 # Gameplay policy: may several moves be in flight at the same time?
 # The real-time variant resolves a contested route in favour of whoever
-# started first, so only one move is allowed at a time (default False).
-# Set True to re-enable concurrent moves.
-ALLOW_CONCURRENT_MOVES = False
+# started first. Set False to force only one move in flight at a time.
+ALLOW_CONCURRENT_MOVES = True

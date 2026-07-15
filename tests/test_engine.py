@@ -80,14 +80,15 @@ def test_friendly_destination_is_rejected():
     assert result.reason == Reason.FRIENDLY_DESTINATION
 
 
-def test_second_move_while_one_is_active_is_rejected():
+def test_second_move_on_a_different_piece_while_one_is_active_is_accepted():
     rows = [["wR", ".", "."], [".", ".", "."], ["bR", ".", "."]]
     engine, board = make_engine(rows)
     engine.request_move((0, 0), (0, 2))
     result = engine.request_move((2, 0), (2, 2))
 
-    assert not result.is_accepted
-    assert result.reason == Reason.MOTION_IN_PROGRESS
+    assert result.is_accepted
+    assert result.reason == Reason.OK
+    assert len(engine.active_moves()) == 2
 
 
 def test_king_capture_ends_the_game():
