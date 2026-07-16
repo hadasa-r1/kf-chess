@@ -97,7 +97,13 @@ class GraphicsRenderer:
 
     def _draw_piece(self, frame, cell, token, is_moving, active_by_start, active_by_cell):
         row, col = cell
-        is_jumping = not is_moving and self._engine.is_busy(cell)
+        # `cell in active_by_cell` (built from the real jumps list, not
+        # GameEngine.is_busy) is the only reliable "is this cell jumping"
+        # check: is_busy(cell) also returns True when `cell` is merely the
+        # *origin* of an unrelated in-flight move elsewhere - which can
+        # happen while this same cell has already been reoccupied by a
+        # different piece that isn't jumping at all.
+        is_jumping = not is_moving and cell in active_by_cell
         cause = None if (is_moving or is_jumping) else self._engine.cooldown_kind(cell)
         rest_kind = self.REST_STATE_FOR_CAUSE.get(cause)
         state = self._state_machine.state_for(is_moving, is_jumping, rest_kind)
