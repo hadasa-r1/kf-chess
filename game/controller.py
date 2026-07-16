@@ -1,6 +1,3 @@
-from rules.reasons import Reason
-
-
 class Controller:
     """Translates user clicks/jumps into GameEngine commands and owns the
     selected-cell state. It decides nothing about chess legality - it only
@@ -47,11 +44,16 @@ class Controller:
         self._engine.request_jump(cell)
 
     def _resolve_selection(self, result, cell):
-        # Clicking another of your own pieces re-selects it (unless that piece
-        # is busy). Every other second click clears the selection: the move
-        # started, or the target was not a legal destination (illegal, blocked
-        # by another motion, off-limits after game over, or an unusable source).
-        if result.reason == Reason.FRIENDLY_DESTINATION and self._engine.can_select(cell):
+        # This is a real-time game with no turn concept - any color's piece
+        # may be selected at any time (GameEngine.can_select performs no
+        # color check) - so any rejected second click (friendly destination,
+        # illegal move for the selected piece, or anything else) re-selects
+        # `cell` immediately if it currently holds a selectable piece,
+        # regardless of color. A rejected click on a cell that can't be
+        # selected (empty, busy, on cooldown, ...) clears the selection
+        # instead, and so does an accepted move (the selected piece is now
+        # in flight).
+        if not result.is_accepted and self._engine.can_select(cell):
             self._selected = cell
         else:
             self._selected = None

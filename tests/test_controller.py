@@ -79,6 +79,17 @@ def test_clicking_another_friendly_piece_reselects():
     assert controller.selected == (0, 2)
 
 
+def test_clicking_an_enemy_piece_after_an_illegal_move_reselects_it():
+    # No turn concept in this real-time variant: an illegal move onto an
+    # enemy-occupied cell should reselect that enemy piece immediately,
+    # the same way a friendly destination does - not clear the selection
+    # and force a second click on the same cell.
+    controller, engine, board = make_controller([["wN", ".", "."], [".", "bR", "."], [".", ".", "."]])
+    controller.click(*cell_to_pixel(0, 0))
+    controller.click(*cell_to_pixel(1, 1))  # not a legal knight move
+    assert controller.selected == (1, 1)
+
+
 def test_jump_clears_selection():
     controller, engine, board = make_controller([["wK", "bR"], [".", "."]])
     controller.click(*cell_to_pixel(0, 0))
