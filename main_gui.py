@@ -18,6 +18,7 @@ from UI.rendering.piece_state_machine import PieceStateMachine
 from UI.rendering.piece_animator import PieceAnimator
 from UI.rendering.position_resolver import PositionResolver
 from UI.rendering.jump_offset_resolver import JumpOffsetResolver
+from UI.rendering.side_panel_renderer import SidePanelRenderer
 
 WINDOW_NAME = "KungFu Chess"
 
@@ -40,6 +41,9 @@ def _build_renderer(engine, board, config):
     position_resolver = PositionResolver(config.CELL_SIZE, config.MOVE_DURATION)
     jump_offset_resolver = JumpOffsetResolver(config.CELL_SIZE, config.JUMP_DURATION)
     board_bg = Img().read(ui_config.BOARD_IMAGE_PATH)
+    side_panel_renderer = SidePanelRenderer(
+        ui_config.SIDE_PANEL_WIDTH, ui_config.SIDE_PANEL_BACKGROUND_COLOR, ui_config.SIDE_PANEL_TEXT_COLOR,
+    )
 
     return GraphicsRenderer(
         engine=engine,
@@ -53,23 +57,30 @@ def _build_renderer(engine, board, config):
         cell_size=config.CELL_SIZE,
         board_width=board.width,
         board_height=board.height,
+        side_panel_renderer=side_panel_renderer,
     )
 
 
-def _on_mouse(controller, event, x, y, flags, param):
+def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
+    # The displayed frame is [white panel | board | black panel] (see
+    # GraphicsRenderer._with_side_panels), so raw window pixels need the
+    # left panel's width subtracted before BoardMapper can turn them into
+    # board cells - otherwise every click/jump maps to the wrong column.
+    board_x = x - board_offset_x
     if event == cv2.EVENT_LBUTTONDOWN:
-        controller.click(x, y)
+        controller.click(board_x, y)
     elif event == cv2.EVENT_RBUTTONDOWN:
-        controller.jump(x, y)
+        controller.jump(board_x, y)
 
 
 def _run_loop(engine, controller, renderer):
     """Owns the cv2 window, mouse handling, and the frame-timing loop.
     Drawing itself is delegated to `renderer` (a GraphicsRenderer)."""
-    cv2.namedWindow(WINDOW_NAME)
+    #cv2.namedWindow(WINDOW_NAME)
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(
         WINDOW_NAME,
-        lambda event, x, y, flags, param: _on_mouse(controller, event, x, y, flags, param),
+        lambda event, x, y, flags, param: _on_mouse(controller, ui_config.SIDE_PANEL_WIDTH, event, x, y, flags, param),
     )
 
     last_frame = time.time()

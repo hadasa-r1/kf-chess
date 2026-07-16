@@ -14,6 +14,8 @@ from board.loaders import load_text_board, BoardParseError
 from game.board_mapper import BoardMapper
 from game.engine import GameEngine
 from game.controller import Controller
+from game.move_history import MoveHistory
+from game.score_board import ScoreBoard
 from view.renderer import BoardRenderer
 
 
@@ -37,6 +39,8 @@ def _build_game(board_lines, config):
         arbiter=arbiter,
         win_condition=KingCaptureWinCondition(),
         config=config,
+        history=MoveHistory(),
+        score_board=ScoreBoard(config.PIECE_VALUES),
     )
     controller = Controller(
         engine=engine,

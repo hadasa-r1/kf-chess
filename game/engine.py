@@ -1,4 +1,5 @@
 from game.models import MoveResult
+from game.move_history import MoveRecord
 from rules.piece_rules import path_is_clear
 from rules.reasons import Reason
 from view.snapshot import GameSnapshot
@@ -19,12 +20,14 @@ class GameEngine:
     with fakes/stubs instead of monkeypatching.
     """
 
-    def __init__(self, board, rule_engine, arbiter, win_condition, config):
+    def __init__(self, board, rule_engine, arbiter, win_condition, config, history, score_board):
         self._board = board
         self._rule_engine = rule_engine
         self._arbiter = arbiter
         self._win_condition = win_condition
         self._config = config
+        self._history = history
+        self._score_board = score_board
         self._game_over = False
 
     @property
@@ -98,6 +101,10 @@ class GameEngine:
             end = truncated_end
 
         self._arbiter.start_move(piece, start, end)
+        self._history.record(MoveRecord(
+            color=piece[0], piece=piece, start=start, end=end,
+            timestamp=self._arbiter.clock,
+        ))
         return MoveResult(True, Reason.OK)
 
     def request_jump(self, cell):
@@ -118,7 +125,11 @@ class GameEngine:
         self._apply_events(self._arbiter.advance_time(dt))
 
     def snapshot(self, selected=None):
-        return GameSnapshot.from_board(self._board, self._game_over, selected=selected)
+        history = {color: self._history.for_color(color) for color in self._config.COLORS}
+        score = {color: self._score_board.score_for(color) for color in self._config.COLORS}
+        return GameSnapshot.from_board(
+            self._board, self._game_over, selected=selected, history=history, score=score,
+        )
 
     def render(self, renderer):
         self._apply_events(self._arbiter.resolve())
@@ -153,5 +164,7 @@ class GameEngine:
         """React to arrivals reported by the arbiter. The arbiter reports what
         was captured; the engine owns whether that ends the game."""
         for event in events:
+            if event.captured is not None:
+                self._score_board.apply_capture(event.piece[0], event.captured)
             if self._win_condition.is_game_over(event.captured):
                 self._game_over = True

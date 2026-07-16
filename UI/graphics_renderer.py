@@ -1,4 +1,5 @@
 import cv2
+import numpy as np
 
 from UI.img import Img
 
@@ -17,7 +18,7 @@ class GraphicsRenderer:
 
     def __init__(self, engine, sprites, state_machine, animator, position_resolver,
                  jump_offset_resolver, rest_durations, board_bg, cell_size,
-                 board_width, board_height):
+                 board_width, board_height, side_panel_renderer):
         self._engine = engine
         self._sprites = sprites
         self._state_machine = state_machine
@@ -29,6 +30,7 @@ class GraphicsRenderer:
         self._cell_size = cell_size
         self._board_width = board_width
         self._board_height = board_height
+        self._side_panel_renderer = side_panel_renderer
 
         expected_h = board_height * cell_size
         expected_w = board_width * cell_size
@@ -78,7 +80,20 @@ class GraphicsRenderer:
         if snapshot.game_over:
             self._draw_game_over(frame)
 
-        return frame
+        return self._with_side_panels(frame, snapshot)
+
+    def _with_side_panels(self, frame, snapshot):
+        channels = frame.img.shape[2]
+        height = frame.img.shape[0]
+        white_panel = self._side_panel_renderer.render(
+            height, channels, "White", snapshot.score.get("w", 0), snapshot.history.get("w", ()),
+        )
+        black_panel = self._side_panel_renderer.render(
+            height, channels, "Black", snapshot.score.get("b", 0), snapshot.history.get("b", ()),
+        )
+        composed = Img()
+        composed.img = np.hstack([white_panel.img, frame.img, black_panel.img])
+        return composed
 
     def _draw_piece(self, frame, cell, token, is_moving, active_by_start, active_by_cell):
         row, col = cell

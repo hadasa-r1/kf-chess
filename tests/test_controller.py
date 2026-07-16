@@ -7,6 +7,8 @@ from realtime.real_time_arbiter import RealTimeArbiter
 from game.engine import GameEngine
 from game.board_mapper import BoardMapper
 from game.controller import Controller
+from game.move_history import MoveHistory
+from game.score_board import ScoreBoard
 
 
 def make_controller(rows):
@@ -18,6 +20,8 @@ def make_controller(rows):
         arbiter=RealTimeArbiter(board=board, promotion_rule=LastRankPromotion(settings.PAWN_DIRECTION), config=settings),
         win_condition=KingCaptureWinCondition(),
         config=settings,
+        history=MoveHistory(),
+        score_board=ScoreBoard(settings.PIECE_VALUES),
     )
     controller = Controller(engine=engine, board_mapper=BoardMapper(board, settings.CELL_SIZE))
     return controller, engine, board

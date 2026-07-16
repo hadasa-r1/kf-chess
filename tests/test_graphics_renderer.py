@@ -7,12 +7,15 @@ from rules.rule_engine import RuleEngine
 from rules.game_conditions import KingCaptureWinCondition, LastRankPromotion
 from realtime.real_time_arbiter import RealTimeArbiter
 from game.engine import GameEngine
+from game.move_history import MoveHistory
+from game.score_board import ScoreBoard
 from UI.img import Img
 from UI.graphics_renderer import GraphicsRenderer
 from UI.rendering.piece_state_machine import PieceStateMachine
 from UI.rendering.piece_animator import PieceAnimator
 from UI.rendering.position_resolver import PositionResolver
 from UI.rendering.jump_offset_resolver import JumpOffsetResolver
+from UI.rendering.side_panel_renderer import SidePanelRenderer
 
 
 class _FakeImg:
@@ -44,6 +47,8 @@ def _make_engine(rows):
         arbiter=arbiter,
         win_condition=KingCaptureWinCondition(),
         config=settings,
+        history=MoveHistory(),
+        score_board=ScoreBoard(settings.PIECE_VALUES),
     )
     return engine, board
 
@@ -69,6 +74,7 @@ def test_render_draws_a_mid_flight_piece_from_raw_moves_list():
         cell_size=100,
         board_width=3,
         board_height=1,
+        side_panel_renderer=SidePanelRenderer(50, (30, 30, 30, 255), (255, 255, 255, 255)),
     )
 
     # Raw lists straight from the engine - not pre-built dicts.

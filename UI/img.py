@@ -66,18 +66,26 @@ class Img:
         h, w = self.img.shape[:2]
         H, W = other_img.img.shape[:2]
 
-        if y + h > H or x + w > W:
-            raise ValueError("Logo does not fit at the specified position.")
+        # Clip to the overlap between the sprite's placement and the
+        # destination canvas - a sprite can legitimately be positioned
+        # partially (or, at the extreme, fully) off-canvas, e.g. a piece at
+        # the peak of its jump arc in the board's top row (y goes negative).
+        src_x0, src_y0 = max(0, -x), max(0, -y)
+        src_x1, src_y1 = min(w, W - x), min(h, H - y)
+        if src_x1 <= src_x0 or src_y1 <= src_y0:
+            return  # entirely off-canvas: nothing to draw
 
-        roi = other_img.img[y:y + h, x:x + w]
+        dst_x0, dst_y0 = max(0, x), max(0, y)
+        sprite = self.img[src_y0:src_y1, src_x0:src_x1]
+        roi = other_img.img[dst_y0:dst_y0 + sprite.shape[0], dst_x0:dst_x0 + sprite.shape[1]]
 
-        if self.img.shape[2] == 4:
-            b, g, r, a = cv2.split(self.img)
+        if sprite.shape[2] == 4:
+            b, g, r, a = cv2.split(sprite)
             mask = a / 255.0
             for c in range(3):
-                roi[..., c] = (1 - mask) * roi[..., c] + mask * self.img[..., c]
+                roi[..., c] = (1 - mask) * roi[..., c] + mask * sprite[..., c]
         else:
-            other_img.img[y:y + h, x:x + w] = self.img
+            roi[...] = sprite
 
     def put_text(self, txt, x, y, font_size, color=(255, 255, 255, 255), thickness=1):
         if self.img is None:

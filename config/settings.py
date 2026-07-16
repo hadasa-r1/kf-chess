@@ -33,3 +33,8 @@ EMPTY_CELL = "."
 # The real-time variant resolves a contested route in favour of whoever
 # started first. Set False to force only one move in flight at a time.
 ALLOW_CONCURRENT_MOVES = True
+
+# Score value awarded to whichever color captures a piece of this kind.
+# Kings are excluded (0) since a king capture already ends the game via
+# KingCaptureWinCondition rather than scoring it.
+PIECE_VALUES = {"P": 1, "N": 3, "B": 3, "R": 5, "Q": 9, "K": 0}
