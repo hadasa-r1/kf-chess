@@ -35,3 +35,4 @@ class Reason(str, Enum):
     BUSY_CELL = "busy_cell"
     EMPTY_CELL = "empty_cell"
     ON_COOLDOWN = "on_cooldown"
+    DESTINATION_CONTESTED = "destination_contested"

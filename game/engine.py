@@ -1,4 +1,5 @@
 from game.models import MoveResult
+from rules.piece_rules import path_is_clear
 from rules.reasons import Reason
 from view.snapshot import GameSnapshot
 
@@ -80,7 +81,23 @@ class GameEngine:
         if not self._config.ALLOW_CONCURRENT_MOVES and self._arbiter.has_active_motion():
             return MoveResult(False, Reason.MOTION_IN_PROGRESS)
 
-        self._arbiter.start_move(self._board.get(*start), start, end)
+        piece = self._board.get(*start)
+
+        # Same-color destination contest: resolved proactively here (not
+        # retroactively on arrival), so the later mover visibly brakes in
+        # real time instead of sliding all the way in and snapping back.
+        # The move that started first always keeps its original full
+        # destination - this only ever adjusts the second, later-requested
+        # same-color move. Opposite-color contests are untouched: the later
+        # arrival correctly captures whichever arrived first (see
+        # RealTimeArbiter._settle_move).
+        if self._arbiter.contested_destination(end, piece[0]) is not None:
+            truncated_end = self._truncated_destination(start, end)
+            if truncated_end is None:
+                return MoveResult(False, Reason.DESTINATION_CONTESTED)
+            end = truncated_end
+
+        self._arbiter.start_move(piece, start, end)
         return MoveResult(True, Reason.OK)
 
     def request_jump(self, cell):
@@ -108,6 +125,29 @@ class GameEngine:
         return renderer.render(self.snapshot())
 
     # -- internal helpers -------------------------------------------------
+
+    def _truncated_destination(self, start, end):
+        """If `start` -> `end` is a straight/diagonal line of 2+ squares
+        (the same shape rules.piece_rules.path_is_clear already assumes for
+        Rook/Bishop/Queen) and the square one step short of `end` along
+        that line is itself reachable and empty, return that square - the
+        contested move stops there instead of the original destination.
+        Returns None when there is no such square (an adjacent-square move,
+        non-linear movement like a knight, or a blocked intermediate)."""
+        sr, sc = start
+        er, ec = end
+        dr, dc = abs(er - sr), abs(ec - sc)
+        straight = (dr == 0) != (dc == 0)
+        diagonal = dr == dc and dr != 0
+        if not (straight or diagonal) or max(dr, dc) < 2:
+            return None
+
+        step_r = (er > sr) - (er < sr)
+        step_c = (ec > sc) - (ec < sc)
+        intermediate = (er - step_r, ec - step_c)
+        if not path_is_clear(self._board, start, intermediate) or not self._board.is_empty(*intermediate):
+            return None
+        return intermediate
 
     def _apply_events(self, events):
         """React to arrivals reported by the arbiter. The arbiter reports what

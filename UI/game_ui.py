@@ -95,40 +95,51 @@ class GameUI:
         if snapshot.selected is not None:
             self._draw_selection(frame, snapshot.selected)
 
+        # A mid-flight piece's source cell is cleared on the board the
+        # instant its move starts (RealTimeArbiter.start_move), so it no
+        # longer shows up as an occupied cell in snapshot.cells - it must be
+        # drawn from the Move itself (move.piece/move.start) instead. Cells
+        # that aren't mid-flight are unaffected and still read from the
+        # board snapshot as before.
         for row, cells in enumerate(snapshot.cells):
             for col, token in enumerate(cells):
                 if token == ".":
                     continue
-                cell = (row, col)
-                is_moving = cell in active_by_start
-                is_jumping = not is_moving and self._engine.is_busy(cell)
-                cause = None if (is_moving or is_jumping) else self._engine.cooldown_kind(cell)
-                rest_kind = self.REST_STATE_FOR_CAUSE.get(cause)
-                state = self._state_machine.state_for(is_moving, is_jumping, rest_kind)
-                frame_list = self._sprites.get(token, state)
-                index = self._animator.current_frame_index(cell, token, state, len(frame_list))
+                self._draw_piece(frame, (row, col), token, False, active_by_start, active_by_cell)
 
-                if is_moving:
-                    x, y = self._position_resolver.pixel_position(active_by_start[cell], self._engine.clock)
-                else:
-                    x, y = col * self._cell_size, row * self._cell_size
-
-                if is_jumping:
-                    offset = self._jump_offset_resolver.vertical_offset(active_by_cell[cell], self._engine.clock)
-                    y -= offset
-
-                sprite = frame_list[index]
-                sprite_h, sprite_w = sprite.img.shape[:2]
-                draw_x, draw_y = self._to_display_position(x, y, sprite_w, sprite_h)
-                sprite.draw_on(frame, draw_x, draw_y)
-
-                if rest_kind is not None:
-                    self._draw_rest_overlay(frame, cell, rest_kind)
+        for cell, move in active_by_start.items():
+            self._draw_piece(frame, cell, move.piece, True, active_by_start, active_by_cell)
 
         if snapshot.game_over:
             self._draw_game_over(frame)
 
         return frame
+
+    def _draw_piece(self, frame, cell, token, is_moving, active_by_start, active_by_cell):
+        row, col = cell
+        is_jumping = not is_moving and self._engine.is_busy(cell)
+        cause = None if (is_moving or is_jumping) else self._engine.cooldown_kind(cell)
+        rest_kind = self.REST_STATE_FOR_CAUSE.get(cause)
+        state = self._state_machine.state_for(is_moving, is_jumping, rest_kind)
+        frame_list = self._sprites.get(token, state)
+        index = self._animator.current_frame_index(cell, token, state, len(frame_list))
+
+        if is_moving:
+            x, y = self._position_resolver.pixel_position(active_by_start[cell], self._engine.clock)
+        else:
+            x, y = col * self._cell_size, row * self._cell_size
+
+        if is_jumping:
+            offset = self._jump_offset_resolver.vertical_offset(active_by_cell[cell], self._engine.clock)
+            y -= offset
+
+        sprite = frame_list[index]
+        sprite_h, sprite_w = sprite.img.shape[:2]
+        draw_x, draw_y = self._to_display_position(x, y, sprite_w, sprite_h)
+        sprite.draw_on(frame, draw_x, draw_y)
+
+        if rest_kind is not None:
+            self._draw_rest_overlay(frame, cell, rest_kind)
 
     def _background_frame(self):
         frame = Img()

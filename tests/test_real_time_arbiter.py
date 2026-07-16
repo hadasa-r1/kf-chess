@@ -24,9 +24,17 @@ def test_one_square_move_has_not_arrived_before_duration():
     arbiter.start_move("wR", (0, 0), (0, 1))
     arbiter.advance_time(settings.MOVE_DURATION - 1)
 
-    assert board.get(0, 0) == "wR"  # still at source
+    # The source is cleared the instant the move starts, not on arrival -
+    # otherwise it would wrongly stay "occupied" for the whole flight.
+    assert board.is_empty(0, 0)
     assert board.is_empty(0, 1)
     assert arbiter.has_active_motion() is True
+
+
+def test_source_cell_clears_the_instant_a_move_starts():
+    arbiter, board = make_arbiter([["wR", ".", "."]])
+    arbiter.start_move("wR", (0, 0), (0, 2))
+    assert board.is_empty(0, 0)
 
 
 def test_one_square_move_arrives_at_duration():
@@ -46,7 +54,7 @@ def test_arrival_time_scales_with_distance():
     arbiter, board = make_arbiter([["wR", ".", "."]])
     arbiter.start_move("wR", (0, 0), (0, 2))  # two squares -> 2000ms
     arbiter.advance_time(settings.MOVE_DURATION)
-    assert board.get(0, 0) == "wR"  # not yet arrived after one duration
+    assert board.is_empty(0, 2)  # not yet arrived after one duration
     arbiter.advance_time(settings.MOVE_DURATION)
     assert board.get(0, 2) == "wR"
 
@@ -100,6 +108,34 @@ def test_friendly_piece_at_destination_cancels_arrival():
     assert board.get(0, 0) == "wR"  # mover survives in place
     assert board.get(0, 2) == "wP"
     assert events == []
+
+
+def test_settle_time_same_color_race_returns_second_piece_to_its_start():
+    # Mirrors a same-tick same-color race that GameEngine's proactive
+    # contest check (which only runs once, at request time) cannot catch:
+    # both moves are started directly on the arbiter, timed to land on the
+    # exact same resolve() call. The piece that loses the race must not
+    # vanish - since its own start was already cleared when it began
+    # moving, it lands back there instead.
+    arbiter, board = make_arbiter([
+        ["wR", ".", "."],
+        [".", "wR", "."],
+    ])
+    arbiter.start_move("wR", (0, 0), (0, 2))  # distance 2, started at clock 0 -> arrival 2000
+    arbiter.advance_time(1000)
+    arbiter.start_move("wR", (1, 1), (0, 2))  # distance 1, started at clock 1000 -> arrival 2000 too
+
+    events = arbiter.advance_time(1000)  # clock reaches 2000: both settle in the same resolve() call
+
+    assert board.get(0, 2) == "wR"   # the first mover wins the contested destination
+    assert board.get(1, 1) == "wR"   # the second mover is restored to its own start
+    assert board.is_empty(0, 0)      # the first mover's original start stays vacated
+    assert len(events) == 1          # only the winner produces an arrival event
+    assert events[0].destination == (0, 2)
+
+    # No piece is ever lost from the board.
+    all_tokens = [board.get(r, c) for r in range(board.height) for c in range(board.width)]
+    assert all_tokens.count("wR") == 2
 
 
 def test_clock_advances_with_time():

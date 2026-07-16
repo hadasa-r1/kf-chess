@@ -59,7 +59,7 @@ def test_second_click_starts_move_and_clears_selection():
     controller.click(*cell_to_pixel(0, 0))
     controller.click(*cell_to_pixel(0, 2))
     assert controller.selected is None
-    assert board.get(0, 0) == "wR"  # still at source until it arrives
+    assert board.is_empty(0, 0)  # source clears the instant the move starts
 
 
 def test_illegal_second_click_clears_selection():

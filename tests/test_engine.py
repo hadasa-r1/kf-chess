@@ -51,7 +51,7 @@ def test_request_move_starts_a_legal_move():
 
     assert result.is_accepted
     assert result.reason == Reason.OK
-    assert board.get(0, 0) == "wR"  # piece stays at the source until it arrives
+    assert board.is_empty(0, 0)  # source clears the instant the move starts
 
 
 def test_move_lands_after_move_duration_elapses():
@@ -213,3 +213,89 @@ def test_snapshot_is_readonly_view_of_state():
     assert snap.width == 2 and snap.height == 2
     assert snap.game_over is False
     assert snap.selected is None
+
+
+def test_same_color_contest_on_straight_line_truncates_to_one_square_short():
+    # The second (later-requested) same-color mover stops one square short
+    # of the contested destination instead of sliding all the way in and
+    # snapping back on arrival. The first mover keeps its full destination.
+    rows = [
+        ["wR", ".", ".", "."],
+        [".", ".", ".", "."],
+        [".", ".", ".", "wR"],
+        [".", ".", ".", "."],
+    ]
+    engine, board = make_engine(rows)
+    first = engine.request_move((0, 0), (0, 3))
+    assert first.is_accepted
+
+    second = engine.request_move((2, 3), (0, 3))
+    assert second.is_accepted
+    assert second.reason == Reason.OK
+
+    moves_by_start = {m.start: m for m in engine.active_moves()}
+    assert moves_by_start[(0, 0)].end == (0, 3)  # untouched, full destination
+    assert moves_by_start[(2, 3)].end == (1, 3)  # truncated one square short
+    assert moves_by_start[(2, 3)].arrival == settings.MOVE_DURATION  # 1-square timing
+
+    engine.wait(settings.MOVE_DURATION)
+    assert board.get(1, 3) == "wR"  # stopped one square short
+    assert board.is_empty(2, 3)
+    assert board.is_empty(0, 3)  # the first mover hasn't arrived yet
+
+
+def test_same_color_contest_on_knight_move_is_rejected():
+    # A knight's path isn't a straight/diagonal line, so there's no
+    # sensible "one square short" cell - the contested move is rejected
+    # outright instead, and no motion starts for it.
+    rows = [
+        ["wN", ".", "wN", "."],
+        [".", ".", ".", "."],
+        [".", ".", ".", "."],
+    ]
+    engine, board = make_engine(rows)
+    first = engine.request_move((0, 0), (2, 1))
+    assert first.is_accepted
+
+    second = engine.request_move((0, 2), (2, 1))
+    assert not second.is_accepted
+    assert second.reason == Reason.DESTINATION_CONTESTED
+    assert board.get(0, 2) == "wN"  # never left
+    assert engine.is_busy((0, 2)) is False
+
+
+def test_same_color_contest_on_adjacent_destination_is_rejected():
+    # Straight-line but only 1 square away: there's no room for an
+    # intermediate square to stop at, so the contest is rejected outright.
+    engine, board = make_engine([["wR", ".", "wR"]])
+    first = engine.request_move((0, 0), (0, 1))
+    assert first.is_accepted
+
+    second = engine.request_move((0, 2), (0, 1))
+    assert not second.is_accepted
+    assert second.reason == Reason.DESTINATION_CONTESTED
+
+
+def test_opposite_color_late_arrival_still_captures_earlier_arrival():
+    # Regression pin: the same-color contest logic must never affect
+    # opposite-color moves to the same destination - the later arrival
+    # simply captures whichever piece got there first, unchanged.
+    rows = [
+        ["wR", ".", "."],
+        [".", ".", "."],
+        [".", ".", "."],
+        [".", "bR", "."],
+    ]
+    engine, board = make_engine(rows)
+    first = engine.request_move((0, 0), (0, 1))
+    assert first.is_accepted
+
+    second = engine.request_move((3, 1), (0, 1))
+    assert second.is_accepted  # opposite color: contest logic never applies
+    assert second.reason == Reason.OK
+
+    engine.wait(settings.MOVE_DURATION)  # wR arrives first
+    assert board.get(0, 1) == "wR"
+
+    engine.wait(2 * settings.MOVE_DURATION)  # bR arrives later, captures it
+    assert board.get(0, 1) == "bR"

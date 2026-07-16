@@ -71,7 +71,24 @@ class RealTimeArbiter:
     def cooldown_kind(self, cell):
         return self._cooldown_kind.get(cell) if self.is_on_cooldown(cell) else None
 
+    def contested_destination(self, end, color):
+        """The earliest-started active move (if any) of `color` already
+        heading to `end`. Used by GameEngine to resolve a same-color
+        destination contest proactively - before a second same-color mover
+        to the same cell is even allowed to start - by truncating or
+        rejecting it. `active_moves()` preserves start order, so the first
+        match is the earliest-started contender."""
+        for move in self.active_moves():
+            if move.end == end and move.piece[0] == color:
+                return move
+        return None
+
     def start_move(self, piece, start, end):
+        # The source leaves the board the instant the move starts, not on
+        # arrival: otherwise it stays "occupied" for the whole flight,
+        # wrongly blocking other pieces from moving into it early and
+        # blocking sliding pieces' path_is_clear checks through it.
+        self._board.set(*start, self._config.EMPTY_CELL)
         self._active_moves.append(Move(piece, start, end, self._arrival_clock(start, end)))
 
     def start_jump(self, piece, cell):
@@ -116,18 +133,46 @@ class RealTimeArbiter:
         r, c = move.end
         target = self._board.get(r, c)
         if target != self._config.EMPTY_CELL and target[0] == move.piece[0]:
+            # Defensive safety net: GameEngine.request_move already resolves
+            # a same-color destination contest proactively (see
+            # contested_destination), truncating or rejecting the second
+            # mover before it ever starts - so this should only fire on a
+            # rare same-tick race the proactive check couldn't see coming
+            # (two same-color moves both settling in the same resolve()
+            # call). The piece must never simply vanish. Its source was
+            # cleared the moment its move started, so that cell is normally
+            # free and is used; if a third piece has since taken it too,
+            # the nearest empty neighbouring cell is used instead, and if
+            # even that whole neighbourhood is full, the start cell is
+            # reused anyway (overwriting) as an absolute last resort -
+            # never discarding the piece.
+            self._board.set(*self._safe_fallback_cell(move.start), move.piece)
             return None
 
         captured = None if target == self._config.EMPTY_CELL else target
         piece = self._promotion_rule.promote(move.piece, r, self._board.height)
-        # The piece stays visible at its source while in flight; it leaves the
-        # source only now, on arrival. (A same-color piece blocking the target
-        # returns above, so the mover survives in place in that case.)
-        self._board.set(*move.start, self._config.EMPTY_CELL)
         self._board.set(r, c, piece)
         self._cooldown_until[(r, c)] = move.arrival + self._config.MOVE_COOLDOWN_DURATION
         self._cooldown_kind[(r, c)] = "move"
         return ArrivalEvent(piece=piece, destination=(r, c), captured=captured)
+
+    def _safe_fallback_cell(self, start):
+        """Where to land a piece whose destination is blocked at settle
+        time (see _settle_move). Prefers `start` (almost always free, since
+        it was cleared the instant the move began); falls back to the
+        nearest empty neighbour, and to `start` itself (overwriting) if
+        even the whole neighbourhood is occupied."""
+        if self._board.is_empty(*start):
+            return start
+        r, c = start
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if self._board.in_bounds(nr, nc) and self._board.is_empty(nr, nc):
+                    return (nr, nc)
+        return start
 
     def _is_intercepted(self, move):
         r, c = move.end
