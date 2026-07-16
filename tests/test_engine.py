@@ -305,11 +305,11 @@ def test_opposite_color_late_arrival_still_captures_earlier_arrival():
     assert board.get(0, 1) == "bR"
 
 
-def test_successful_move_is_recorded_in_snapshot_history():
+def test_successful_move_is_recorded_in_move_history():
     engine, board = make_engine([["wR", ".", "."], [".", ".", "."], [".", ".", "."]])
     engine.request_move((0, 0), (0, 2))
 
-    white_history = engine.snapshot().history["w"]
+    white_history = engine.move_history("w")
     assert len(white_history) == 1
     record = white_history[0]
     assert record.color == "w"
@@ -318,15 +318,15 @@ def test_successful_move_is_recorded_in_snapshot_history():
     assert record.end == (0, 2)
     assert record.timestamp == 0
 
-    assert engine.snapshot().history["b"] == ()
+    assert engine.move_history("b") == ()
 
 
-def test_capture_updates_snapshot_score():
+def test_capture_updates_score():
     rows = [["wR", ".", "bP"], [".", ".", "."], [".", ".", "."]]
     engine, board = make_engine(rows)
     engine.request_move((0, 0), (0, 2))
     engine.wait(2 * settings.MOVE_DURATION)
 
     assert board.get(0, 2) == "wR"
-    assert engine.snapshot().score["w"] == 1  # pawn value
-    assert engine.snapshot().score["b"] == 0
+    assert engine.score("w") == 1  # pawn value
+    assert engine.score("b") == 0

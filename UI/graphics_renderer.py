@@ -54,7 +54,7 @@ class GraphicsRenderer:
     def advance(self, elapsed_ms):
         self._animator.advance(elapsed_ms)
 
-    def render(self, snapshot, moves, jumps):
+    def render(self, snapshot, moves, jumps, white_history, black_history, white_score, black_score):
         active_by_start = {move.start: move for move in moves}
         active_by_cell = {jump.cell: jump for jump in jumps}
         frame = self._background_frame()
@@ -80,16 +80,16 @@ class GraphicsRenderer:
         if snapshot.game_over:
             self._draw_game_over(frame)
 
-        return self._with_side_panels(frame, snapshot)
+        return self._with_side_panels(frame, white_history, black_history, white_score, black_score)
 
-    def _with_side_panels(self, frame, snapshot):
+    def _with_side_panels(self, frame, white_history, black_history, white_score, black_score):
         channels = frame.img.shape[2]
         height = frame.img.shape[0]
         white_panel = self._side_panel_renderer.render(
-            height, channels, "White", snapshot.score.get("w", 0), snapshot.history.get("w", ()),
+            height, channels, "White", white_score, white_history,
         )
         black_panel = self._side_panel_renderer.render(
-            height, channels, "Black", snapshot.score.get("b", 0), snapshot.history.get("b", ()),
+            height, channels, "Black", black_score, black_history,
         )
         composed = Img()
         composed.img = np.hstack([white_panel.img, frame.img, black_panel.img])

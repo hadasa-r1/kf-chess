@@ -44,6 +44,12 @@ class GameEngine:
     def active_jumps(self):
         return self._arbiter.active_jumps()
 
+    def move_history(self, color):
+        return self._history.for_color(color)
+
+    def score(self, color):
+        return self._score_board.score_for(color)
+
     def is_busy(self, cell):
         return self._arbiter.is_moving_from(cell) or self._arbiter.is_jumping_on(cell)
 
@@ -125,11 +131,7 @@ class GameEngine:
         self._apply_events(self._arbiter.advance_time(dt))
 
     def snapshot(self, selected=None):
-        history = {color: self._history.for_color(color) for color in self._config.COLORS}
-        score = {color: self._score_board.score_for(color) for color in self._config.COLORS}
-        return GameSnapshot.from_board(
-            self._board, self._game_over, selected=selected, history=history, score=score,
-        )
+        return GameSnapshot.from_board(self._board, self._game_over, selected=selected)
 
     def render(self, renderer):
         self._apply_events(self._arbiter.resolve())

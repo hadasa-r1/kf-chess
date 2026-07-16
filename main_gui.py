@@ -93,7 +93,11 @@ def _run_loop(engine, controller, renderer):
         snapshot = engine.snapshot(selected=controller.selected)
         renderer.advance(elapsed_ms)
 
-        frame = renderer.render(snapshot, engine.active_moves(), engine.active_jumps())
+        frame = renderer.render(
+            snapshot, engine.active_moves(), engine.active_jumps(),
+            engine.move_history("w"), engine.move_history("b"),
+            engine.score("w"), engine.score("b"),
+        )
 
         if snapshot.game_over:
             cv2.imshow(WINDOW_NAME, frame.img)

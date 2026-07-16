@@ -78,7 +78,11 @@ def test_render_draws_a_mid_flight_piece_from_raw_moves_list():
     )
 
     # Raw lists straight from the engine - not pre-built dicts.
-    renderer.render(engine.snapshot(), engine.active_moves(), engine.active_jumps())
+    renderer.render(
+        engine.snapshot(), engine.active_moves(), engine.active_jumps(),
+        engine.move_history("w"), engine.move_history("b"),
+        engine.score("w"), engine.score("b"),
+    )
 
     # Halfway through a 2-square move, the piece should be drawn at the
     # interpolated pixel position (x=100), not its static grid cell (x=0).
