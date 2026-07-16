@@ -68,3 +68,17 @@ def test_main_reads_from_injected_stream(capsys):
     main_module.main(input_stream=stream)
     out = capsys.readouterr().out
     assert out.strip() == "wK . bK"
+
+
+def test_gui_flag_routes_to_run_gui(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_module, "run_gui", lambda: calls.append(True))
+    main_module.main(argv=["--gui"])
+    assert calls == [True]
+
+
+def test_without_gui_flag_runs_the_text_loop(capsys):
+    stream = io.StringIO("Board:\nwK . bK\nCommands:\nprint\n")
+    main_module.main(input_stream=stream, argv=[])
+    out = capsys.readouterr().out
+    assert out.strip() == "wK . bK"
