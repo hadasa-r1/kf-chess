@@ -1,0 +1,79 @@
+import numpy as np
+
+from config import settings
+from board.board import Board
+from rules.rule_registry import build_default_registry
+from rules.rule_engine import RuleEngine
+from rules.game_conditions import KingCaptureWinCondition, LastRankPromotion
+from realtime.real_time_arbiter import RealTimeArbiter
+from game.engine import GameEngine
+from UI.img import Img
+from UI.graphics_renderer import GraphicsRenderer
+from UI.rendering.piece_state_machine import PieceStateMachine
+from UI.rendering.piece_animator import PieceAnimator
+from UI.rendering.position_resolver import PositionResolver
+from UI.rendering.jump_offset_resolver import JumpOffsetResolver
+
+
+class _FakeImg:
+    def __init__(self):
+        self.img = np.zeros((100, 100, 4), dtype=np.uint8)
+        self.draw_calls = []
+
+    def draw_on(self, other, x, y):
+        self.draw_calls.append((x, y))
+
+
+class _FakeSprites:
+    def __init__(self):
+        self.last_sprite = None
+
+    def get(self, token, state):
+        sprite = _FakeImg()
+        self.last_sprite = sprite
+        return [sprite]
+
+
+def _make_engine(rows):
+    registry = build_default_registry(settings)
+    board = Board(rows)
+    arbiter = RealTimeArbiter(board=board, promotion_rule=LastRankPromotion(settings.PAWN_DIRECTION), config=settings)
+    engine = GameEngine(
+        board=board,
+        rule_engine=RuleEngine(rule_registry=registry, config=settings),
+        arbiter=arbiter,
+        win_condition=KingCaptureWinCondition(),
+        config=settings,
+    )
+    return engine, board
+
+
+def test_render_draws_a_mid_flight_piece_from_raw_moves_list():
+    engine, board = _make_engine([["wR", ".", "."]])
+    engine.request_move((0, 0), (0, 2))  # 2-square move, 2000ms total
+    engine.wait(1000)  # halfway
+
+    board_bg = Img()
+    board_bg.img = np.full((100, 300, 4), 255, dtype=np.uint8)
+    sprites = _FakeSprites()
+
+    renderer = GraphicsRenderer(
+        engine=engine,
+        sprites=sprites,
+        state_machine=PieceStateMachine(),
+        animator=PieceAnimator(120),
+        position_resolver=PositionResolver(100, settings.MOVE_DURATION),
+        jump_offset_resolver=JumpOffsetResolver(100, settings.JUMP_DURATION),
+        rest_durations={"long_rest": settings.MOVE_COOLDOWN_DURATION, "short_rest": settings.JUMP_COOLDOWN_DURATION},
+        board_bg=board_bg,
+        cell_size=100,
+        board_width=3,
+        board_height=1,
+    )
+
+    # Raw lists straight from the engine - not pre-built dicts.
+    renderer.render(engine.snapshot(), engine.active_moves(), engine.active_jumps())
+
+    # Halfway through a 2-square move, the piece should be drawn at the
+    # interpolated pixel position (x=100), not its static grid cell (x=0).
+    assert sprites.last_sprite.draw_calls == [(100, 0)]

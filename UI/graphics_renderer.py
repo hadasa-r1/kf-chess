@@ -5,8 +5,8 @@ from UI.img import Img
 
 class GraphicsRenderer:
     """Turns a GameEngine snapshot into a drawn frame. Owns only drawing -
-    no cv2 window, no mouse handling, no game loop (see UI/game_ui.py's
-    run_gui for those).
+    no cv2 window, no mouse handling, no game loop (see main_gui.py's
+    _run_loop for those).
     """
 
     # GameEngine.cooldown_kind reports the *cause* ("move"/"jump"); the
@@ -52,7 +52,9 @@ class GraphicsRenderer:
     def advance(self, elapsed_ms):
         self._animator.advance(elapsed_ms)
 
-    def render(self, snapshot, active_by_start, active_by_cell):
+    def render(self, snapshot, moves, jumps):
+        active_by_start = {move.start: move for move in moves}
+        active_by_cell = {jump.cell: jump for jump in jumps}
         frame = self._background_frame()
 
         if snapshot.selected is not None:
