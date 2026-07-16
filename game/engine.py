@@ -37,6 +37,9 @@ class GameEngine:
     def active_moves(self):
         return self._arbiter.active_moves()
 
+    def active_jumps(self):
+        return self._arbiter.active_jumps()
+
     def is_busy(self, cell):
         return self._arbiter.is_moving_from(cell) or self._arbiter.is_jumping_on(cell)
 

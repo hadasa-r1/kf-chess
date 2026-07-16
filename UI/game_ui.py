@@ -19,13 +19,14 @@ class GameUI:
     # between them.
     REST_STATE_FOR_CAUSE = {"move": "long_rest", "jump": "short_rest"}
 
-    def __init__(self, engine, controller, sprites, state_machine, animator, position_resolver, rest_durations, board_bg, cell_size, board_width, board_height):
+    def __init__(self, engine, controller, sprites, state_machine, animator, position_resolver, jump_offset_resolver, rest_durations, board_bg, cell_size, board_width, board_height):
         self._engine = engine
         self._controller = controller
         self._sprites = sprites
         self._state_machine = state_machine
         self._animator = animator
         self._position_resolver = position_resolver
+        self._jump_offset_resolver = jump_offset_resolver
         self._rest_durations = rest_durations
         self._board_bg = board_bg
         self._cell_size = cell_size
@@ -53,6 +54,7 @@ class GameUI:
 
     def run(self):
         cv2.namedWindow(self.WINDOW_NAME)
+        #cv2.resizeWindow(self.WINDOW_NAME, 700, 700) 
         cv2.setMouseCallback(self.WINDOW_NAME, self._on_mouse)
 
         last_frame = time.time()
@@ -63,10 +65,11 @@ class GameUI:
 
             self._engine.wait(elapsed_ms)
             active_by_start = {move.start: move for move in self._engine.active_moves()}
+            active_by_cell = {jump.cell: jump for jump in self._engine.active_jumps()}
             snapshot = self._engine.snapshot(selected=self._controller.selected)
             self._animator.advance(elapsed_ms)
 
-            frame = self._draw_frame(snapshot, active_by_start)
+            frame = self._draw_frame(snapshot, active_by_start, active_by_cell)
 
             if snapshot.game_over:
                 cv2.imshow(self.WINDOW_NAME, frame.img)
@@ -86,7 +89,7 @@ class GameUI:
         elif event == cv2.EVENT_RBUTTONDOWN:
             self._controller.jump(x, y)
 
-    def _draw_frame(self, snapshot, active_by_start):
+    def _draw_frame(self, snapshot, active_by_start, active_by_cell):
         frame = self._background_frame()
 
         if snapshot.selected is not None:
@@ -109,6 +112,10 @@ class GameUI:
                     x, y = self._position_resolver.pixel_position(active_by_start[cell], self._engine.clock)
                 else:
                     x, y = col * self._cell_size, row * self._cell_size
+
+                if is_jumping:
+                    offset = self._jump_offset_resolver.vertical_offset(active_by_cell[cell], self._engine.clock)
+                    y -= offset
 
                 sprite = frame_list[index]
                 sprite_h, sprite_w = sprite.img.shape[:2]
@@ -230,6 +237,7 @@ if __name__ == "__main__":  # pragma: no cover
     from UI.rendering.piece_state_machine import PieceStateMachine
     from UI.rendering.piece_animator import PieceAnimator
     from UI.rendering.position_resolver import PositionResolver
+    from UI.rendering.jump_offset_resolver import JumpOffsetResolver
 
     config = settings
     registry = build_default_registry(config)
@@ -267,6 +275,7 @@ if __name__ == "__main__":  # pragma: no cover
     state_machine = PieceStateMachine()
     animator = PieceAnimator(ui_config.FRAME_DURATION_MS)
     position_resolver = PositionResolver(config.CELL_SIZE, config.MOVE_DURATION)
+    jump_offset_resolver = JumpOffsetResolver(config.CELL_SIZE, config.JUMP_DURATION)
     board_bg = Img().read(ui_config.BOARD_IMAGE_PATH)
 
     ui = GameUI(
@@ -276,6 +285,7 @@ if __name__ == "__main__":  # pragma: no cover
         state_machine=state_machine,
         animator=animator,
         position_resolver=position_resolver,
+        jump_offset_resolver=jump_offset_resolver,
         rest_durations=rest_durations,
         board_bg=board_bg,
         cell_size=config.CELL_SIZE,
