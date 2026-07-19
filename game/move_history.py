@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from game.move_observer import MoveObserver
+
 
 @dataclass(frozen=True)
 class MoveRecord:
@@ -18,7 +20,7 @@ class MoveRecord:
     timestamp: int
 
 
-class MoveHistory:
+class MoveHistory(MoveObserver):
     """Append-only log of every accepted move, in order.
 
     Owns nothing about display - GameEngine writes to it, callers read from
@@ -31,6 +33,9 @@ class MoveHistory:
 
     def record(self, move_record):
         self._entries.append(move_record)
+
+    def on_move_started(self, record: MoveRecord) -> None:
+        self.record(record)
 
     def for_color(self, color):
         return tuple(e for e in self._entries if e.color == color)

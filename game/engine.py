@@ -1,5 +1,6 @@
 from game.models import MoveResult
 from game.move_history import MoveRecord
+from game.move_observer import MoveObserver
 from rules.piece_rules import path_is_clear
 from rules.reasons import Reason
 from view.snapshot import GameSnapshot
@@ -20,7 +21,8 @@ class GameEngine:
     with fakes/stubs instead of monkeypatching.
     """
 
-    def __init__(self, board, rule_engine, arbiter, win_condition, config, history, score_board):
+    def __init__(self, board, rule_engine, arbiter, win_condition, config, history, score_board,
+                 move_observers: list[MoveObserver] | None = None):
         self._board = board
         self._rule_engine = rule_engine
         self._arbiter = arbiter
@@ -29,6 +31,7 @@ class GameEngine:
         self._history = history
         self._score_board = score_board
         self._game_over = False
+        self._move_observers = move_observers if move_observers is not None else [history]
 
     @property
     def game_over(self):
@@ -107,10 +110,11 @@ class GameEngine:
             end = truncated_end
 
         self._arbiter.start_move(piece, start, end)
-        self._history.record(MoveRecord(
+        record = MoveRecord(
             color=piece[0], piece=piece, start=start, end=end,
             timestamp=self._arbiter.clock,
-        ))
+        )
+        self._notify_move_started(record)
         return MoveResult(True, Reason.OK)
 
     def request_jump(self, cell):
@@ -138,6 +142,10 @@ class GameEngine:
         return renderer.render(self.snapshot())
 
     # -- internal helpers -------------------------------------------------
+
+    def _notify_move_started(self, record):
+        for observer in self._move_observers:
+            observer.on_move_started(record)
 
     def _truncated_destination(self, start, end):
         """If `start` -> `end` is a straight/diagonal line of 2+ squares
