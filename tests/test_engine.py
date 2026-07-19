@@ -1,4 +1,5 @@
 from config import settings
+from bus.event_bus import EventBus
 from board.board import Board
 from rules.rule_registry import build_default_registry
 from rules.rule_engine import RuleEngine
@@ -9,6 +10,7 @@ from rules.game_conditions import (
     PromotionRule,
 )
 from realtime.real_time_arbiter import RealTimeArbiter
+from bus.events import Event, GameEndedEvent, GameStartedEvent, InvalidMoveEvent, MoveMadeEvent, ScoreChangedEvent
 from game.engine import GameEngine
 from game.move_history import MoveHistory
 from game.score_board import ScoreBoard
@@ -29,7 +31,7 @@ class NoPromotion(PromotionRule):
         return piece
 
 
-def make_engine(rows, win_condition=None, promotion_rule=None):
+def make_engine(rows, win_condition=None, promotion_rule=None, event_bus=None):
     board = Board(rows)
     registry = build_default_registry(settings)
     arbiter = RealTimeArbiter(
@@ -45,6 +47,7 @@ def make_engine(rows, win_condition=None, promotion_rule=None):
         config=settings,
         history=MoveHistory(),
         score_board=ScoreBoard(settings.PIECE_VALUES),
+        event_bus=event_bus or EventBus(),
     )
     return engine, board
 
@@ -330,3 +333,148 @@ def test_capture_updates_score():
     assert board.get(0, 2) == "wR"
     assert engine.score("w") == 1  # pawn value
     assert engine.score("b") == 0
+
+
+def _record_events(bus, event_type):
+    received = []
+    bus.subscribe(event_type, received.append)
+    return received
+
+
+def test_engine_construction_publishes_game_started_event():
+    bus = EventBus()
+    received = _record_events(bus, GameStartedEvent)
+    make_engine([["wK", "."], [".", "bK"]], event_bus=bus)
+
+    assert len(received) == 1
+    assert received[0].white_player == "w"
+    assert received[0].black_player == "b"
+
+
+def test_move_publishes_move_made_event():
+    bus = EventBus()
+    received = _record_events(bus, MoveMadeEvent)
+    engine, board = make_engine([["wR", ".", "."], [".", ".", "."], [".", ".", "."]], event_bus=bus)
+
+    engine.request_move((0, 0), (0, 2))
+
+    assert len(received) == 1
+    event = received[0]
+    assert event.color == "w"
+    assert event.piece == "wR"
+    assert event.start == (0, 0)
+    assert event.end == (0, 2)
+    assert event.timestamp == 0
+
+
+def test_capture_publishes_score_changed_event():
+    bus = EventBus()
+    received = _record_events(bus, ScoreChangedEvent)
+    rows = [["wR", ".", "bP"], [".", ".", "."], [".", ".", "."]]
+    engine, board = make_engine(rows, event_bus=bus)
+
+    engine.request_move((0, 0), (0, 2))
+    engine.wait(2 * settings.MOVE_DURATION)
+
+    assert len(received) == 1
+    assert received[0].player == "w"
+    assert received[0].new_score == 1
+
+
+def test_game_over_publishes_game_ended_event_exactly_once():
+    bus = EventBus()
+    received = _record_events(bus, GameEndedEvent)
+    rows = [["wR", ".", "bK"], [".", ".", "."], [".", ".", "."]]
+    engine, board = make_engine(rows, event_bus=bus)
+
+    engine.request_move((0, 0), (0, 2))
+    engine.wait(2 * settings.MOVE_DURATION)
+
+    assert len(received) == 1
+    assert received[0].winner == "w"
+
+    # Taking further snapshots/renders after game over must not re-fire it.
+    engine.snapshot()
+    engine.render(BoardRenderer())
+    engine.wait(settings.MOVE_DURATION)
+
+    assert len(received) == 1
+
+
+def test_move_history_and_score_board_are_unaffected_by_the_bus():
+    # The bus is a parallel, additional channel - MoveHistory/ScoreBoard stay
+    # the engine's own source of truth even with no subscribers at all.
+    rows = [["wR", ".", "bP"], [".", ".", "."], [".", ".", "."]]
+    engine, board = make_engine(rows)
+    engine.request_move((0, 0), (0, 2))
+    engine.wait(2 * settings.MOVE_DURATION)
+
+    assert len(engine.move_history("w")) == 1
+    assert engine.score("w") == 1
+
+
+def test_illegal_piece_move_publishes_invalid_move_event():
+    bus = EventBus()
+    received = _record_events(bus, InvalidMoveEvent)
+    engine, board = make_engine([["wN", ".", "."], [".", ".", "."], [".", ".", "."]], event_bus=bus)
+
+    engine.request_move((0, 0), (0, 1))  # not a legal knight move
+
+    assert len(received) == 1
+    assert received[0].reason == Reason.ILLEGAL_PIECE_MOVE
+    assert received[0].start == (0, 0)
+    assert received[0].end == (0, 1)
+
+
+def test_friendly_destination_publishes_invalid_move_event():
+    bus = EventBus()
+    received = _record_events(bus, InvalidMoveEvent)
+    engine, board = make_engine([["wR", "wP", "."]], event_bus=bus)
+
+    engine.request_move((0, 0), (0, 1))
+
+    assert len(received) == 1
+    assert received[0].reason == Reason.FRIENDLY_DESTINATION
+    assert received[0].start == (0, 0)
+    assert received[0].end == (0, 1)
+
+
+def test_empty_source_publishes_invalid_move_event():
+    bus = EventBus()
+    received = _record_events(bus, InvalidMoveEvent)
+    engine, board = make_engine([[".", ".", "."]], event_bus=bus)
+
+    engine.request_move((0, 0), (0, 1))
+
+    assert len(received) == 1
+    assert received[0].reason == Reason.EMPTY_SOURCE
+    assert received[0].start == (0, 0)
+    assert received[0].end == (0, 1)
+
+
+def test_outside_board_publishes_invalid_move_event():
+    bus = EventBus()
+    received = _record_events(bus, InvalidMoveEvent)
+    engine, board = make_engine([["wR", ".", "."]], event_bus=bus)
+
+    engine.request_move((0, 0), (5, 5))  # destination outside the board
+
+    assert len(received) == 1
+    assert received[0].reason == Reason.OUTSIDE_BOARD
+    assert received[0].start == (0, 0)
+    assert received[0].end == (5, 5)
+
+
+def test_busy_source_rejection_does_not_publish_invalid_move_event():
+    # BUSY_SOURCE is an internal/timing state, not a player-facing rule
+    # violation - it must not trigger InvalidMoveEvent.
+    bus = EventBus()
+    received = _record_events(bus, InvalidMoveEvent)
+    engine, board = make_engine([["wR", ".", "."], [".", ".", "."], [".", ".", "."]], event_bus=bus)
+
+    engine.request_move((0, 0), (0, 2))  # in flight, source (0,0) busy
+    result = engine.request_move((0, 0), (0, 1))
+
+    assert not result.is_accepted
+    assert result.reason == Reason.BUSY_SOURCE
+    assert received == []

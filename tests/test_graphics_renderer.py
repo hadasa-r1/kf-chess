@@ -1,6 +1,7 @@
 import numpy as np
 
 from config import settings
+from bus.event_bus import EventBus
 from board.board import Board
 from rules.rule_registry import build_default_registry
 from rules.rule_engine import RuleEngine
@@ -49,6 +50,7 @@ def _make_engine(rows):
         config=settings,
         history=MoveHistory(),
         score_board=ScoreBoard(settings.PIECE_VALUES),
+        event_bus=EventBus(),
     )
     return engine, board
 

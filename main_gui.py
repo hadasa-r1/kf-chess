@@ -7,6 +7,13 @@ import time
 
 import cv2
 
+from bus.event_bus import EventBus
+from bus_handlers.animation_trigger_handler import AnimationTriggerHandler
+from bus_handlers.audio_sound_player import AudioSoundPlayer
+from bus_handlers.graphics_animation_trigger import GraphicsAnimationTrigger
+from bus_handlers.move_log_display_state import MoveLogDisplayState
+from bus_handlers.score_display_state import ScoreDisplayState
+from bus_handlers.sound_handler import SoundHandler
 from config import settings
 from main import _build_game
 from UI import ui_config
@@ -61,6 +68,22 @@ def _build_renderer(engine, board, config):
     )
 
 
+def _build_bus_handlers(bus):
+    """Builds the four bus-driven subscribers (score/move-log read models,
+    sound, animation) and subscribes them to `bus`.
+
+    Must be called - and its handlers subscribed - *before* `_build_game`
+    constructs GameEngine: GameEngine publishes GameStartedEvent
+    synchronously from its own __init__, so a subscriber wired only after
+    that call returns would silently miss the very first game's start.
+    """
+    score_state = ScoreDisplayState(bus)
+    move_log_state = MoveLogDisplayState(bus)
+    sound_handler = SoundHandler(bus, AudioSoundPlayer())
+    animation_handler = AnimationTriggerHandler(bus, GraphicsAnimationTrigger())
+    return score_state, move_log_state, sound_handler, animation_handler
+
+
 def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
     # The displayed frame is [white panel | board | black panel] (see
     # GraphicsRenderer._with_side_panels), so raw window pixels need the
@@ -73,9 +96,13 @@ def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
         controller.jump(board_x, y)
 
 
-def _run_loop(engine, controller, renderer):
+def _run_loop(engine, controller, renderer, score_state, move_log_state):
     """Owns the cv2 window, mouse handling, and the frame-timing loop.
-    Drawing itself is delegated to `renderer` (a GraphicsRenderer)."""
+    Drawing itself is delegated to `renderer` (a GraphicsRenderer). Score
+    and move-log values are polled from the bus-fed read models
+    (score_state/move_log_state) rather than the engine's own
+    score()/move_history(), which remain the engine's internal source of
+    truth and are still used elsewhere (e.g. tests)."""
     #cv2.namedWindow(WINDOW_NAME)
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(
@@ -95,8 +122,8 @@ def _run_loop(engine, controller, renderer):
 
         frame = renderer.render(
             snapshot, engine.active_moves(), engine.active_jumps(),
-            engine.move_history("w"), engine.move_history("b"),
-            engine.score("w"), engine.score("b"),
+            move_log_state.entries_for("w"), move_log_state.entries_for("b"),
+            score_state.score_for("w"), score_state.score_for("b"),
         )
 
         if snapshot.game_over:
@@ -117,10 +144,13 @@ def main(config=settings):
     OpenCV front end."""
     with open(ui_config.BOARD_FILE) as f:
         board_lines = [line.rstrip("\n") for line in f]
-    engine, controller, board = _build_game(board_lines, config)
+
+    bus = EventBus()
+    score_state, move_log_state, sound_handler, animation_handler = _build_bus_handlers(bus)
+    engine, controller, board, bus = _build_game(board_lines, config, bus=bus)
 
     renderer = _build_renderer(engine, board, config)
-    _run_loop(engine, controller, renderer)
+    _run_loop(engine, controller, renderer, score_state, move_log_state)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -4,6 +4,7 @@ Repository: https://github.com/hadasa-r1/kf-chess
 """
 import sys
 
+from bus.event_bus import EventBus
 from config import settings
 from rules.rule_registry import build_default_registry
 from rules.rule_engine import RuleEngine
@@ -19,11 +20,17 @@ from game.score_board import ScoreBoard
 from view.renderer import BoardRenderer
 
 
-def _build_game(board_lines, config):
+def _build_game(board_lines, config, bus=None):
     """Constructs the registry/board/arbiter/engine/controller graph shared
     by the text CLI (run(), below) and the graphical entry point
     (main_gui.py). The only place in the project that builds this graph,
     so a change to any constructor's arguments only needs to be made here.
+
+    `bus` is injectable (defaulting to a fresh EventBus) so a caller that
+    needs to subscribe listeners can create the bus itself and pass it in
+    *before* calling this - GameEngine publishes GameStartedEvent from its
+    own __init__ below, so any subscriber wired only after this function
+    returns would already have missed it.
     """
     registry = build_default_registry(config)
     board = load_text_board(board_lines, registry, config)
@@ -33,6 +40,7 @@ def _build_game(board_lines, config):
         promotion_rule=LastRankPromotion(config.PAWN_DIRECTION),
         config=config,
     )
+    bus = bus if bus is not None else EventBus()
     engine = GameEngine(
         board=board,
         rule_engine=RuleEngine(rule_registry=registry, config=config),
@@ -41,12 +49,13 @@ def _build_game(board_lines, config):
         config=config,
         history=MoveHistory(),
         score_board=ScoreBoard(config.PIECE_VALUES),
+        event_bus=bus,
     )
     controller = Controller(
         engine=engine,
         board_mapper=BoardMapper(board, config.CELL_SIZE),
     )
-    return engine, controller, board
+    return engine, controller, board, bus
 
 
 def run(input_lines, config=settings):
@@ -57,7 +66,7 @@ def run(input_lines, config=settings):
     board_lines, commands = parse_input(input_lines)
 
     try:
-        engine, controller, board = _build_game(board_lines, config)
+        engine, controller, board, bus = _build_game(board_lines, config)
     except BoardParseError as error:
         print("ERROR", error)
         return

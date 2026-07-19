@@ -1,3 +1,5 @@
+from bus.event_bus import EventBus
+from bus.events import GameEndedEvent, GameStartedEvent, InvalidMoveEvent, MoveMadeEvent, ScoreChangedEvent
 from game.models import MoveResult
 from game.move_history import MoveRecord
 from game.move_observer import MoveObserver
@@ -22,7 +24,7 @@ class GameEngine:
     """
 
     def __init__(self, board, rule_engine, arbiter, win_condition, config, history, score_board,
-                 move_observers: list[MoveObserver] | None = None):
+                 event_bus: EventBus, move_observers: list[MoveObserver] | None = None):
         self._board = board
         self._rule_engine = rule_engine
         self._arbiter = arbiter
@@ -32,6 +34,16 @@ class GameEngine:
         self._score_board = score_board
         self._game_over = False
         self._move_observers = move_observers if move_observers is not None else [history]
+        self._bus = event_bus
+
+        # The bus is a parallel, external-listener-only notification channel:
+        # MoveHistory/ScoreBoard/self._game_over above remain the engine's own
+        # source of truth regardless of who (if anyone) is subscribed. There is
+        # no separate "start the game" step today - construction of the engine
+        # IS the start of the game - so GameStartedEvent fires here once, with
+        # color codes standing in for player identity until the project has a
+        # real player-identity concept.
+        self._bus.publish(GameStartedEvent(white_player="w", black_player="b"))
 
     @property
     def game_over(self):
@@ -84,6 +96,7 @@ class GameEngine:
 
         validation = self._rule_engine.validate_move(self._board, start, end)
         if not validation.is_valid:
+            self._bus.publish(InvalidMoveEvent(reason=validation.reason, start=start, end=end))
             return MoveResult(False, validation.reason)
 
         # Real-time policy: only one move may be in flight at a time, so a
@@ -115,6 +128,10 @@ class GameEngine:
             timestamp=self._arbiter.clock,
         )
         self._notify_move_started(record)
+        self._bus.publish(MoveMadeEvent(
+            color=record.color, piece=record.piece, start=record.start,
+            end=record.end, timestamp=record.timestamp,
+        ))
         return MoveResult(True, Reason.OK)
 
     def request_jump(self, cell):
@@ -176,5 +193,11 @@ class GameEngine:
         for event in events:
             if event.captured is not None:
                 self._score_board.apply_capture(event.piece[0], event.captured)
-            if self._win_condition.is_game_over(event.captured):
+                self._bus.publish(ScoreChangedEvent(
+                    player=event.piece[0], new_score=self._score_board.score_for(event.piece[0]),
+                ))
+            if not self._game_over and self._win_condition.is_game_over(event.captured):
                 self._game_over = True
+                self._bus.publish(GameEndedEvent(
+                    winner=event.piece[0], reason=f"captured_{event.captured[1]}",
+                ))
