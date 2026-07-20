@@ -5,21 +5,22 @@ from UI.img import Img
 
 
 class GraphicsRenderer:
-    """Turns a GameEngine snapshot into a drawn frame. Owns only drawing -
-    no cv2 window, no mouse handling, no game loop (see main_gui.py's
-    _run_loop for those).
+    """Turns a FrameState into a drawn frame. Owns only drawing - no cv2
+    window, no mouse handling, no game loop (see main_gui.py's _run_loop
+    for those), and no GameEngine dependency at all: every value it needs
+    per frame arrives pre-computed on the FrameState passed to render()
+    (see view/snapshot.py's FrameState.from_engine).
     """
 
-    # GameEngine.cooldown_kind reports the *cause* ("move"/"jump"); the
+    # The cooldown cause ("move"/"jump") on FrameState.cooldowns; the
     # sprite/rest-duration vocabulary elsewhere is the *state name*
     # ("long_rest"/"short_rest") - this is the one place that translates
     # between them.
     REST_STATE_FOR_CAUSE = {"move": "long_rest", "jump": "short_rest"}
 
-    def __init__(self, engine, sprites, state_machine, animator, position_resolver,
+    def __init__(self, sprites, state_machine, animator, position_resolver,
                  jump_offset_resolver, rest_durations, board_bg, cell_size,
                  board_width, board_height, side_panel_renderer):
-        self._engine = engine
         self._sprites = sprites
         self._state_machine = state_machine
         self._animator = animator
@@ -54,9 +55,10 @@ class GraphicsRenderer:
     def advance(self, elapsed_ms):
         self._animator.advance(elapsed_ms)
 
-    def render(self, snapshot, moves, jumps, white_history, black_history, white_score, black_score):
-        active_by_start = {move.start: move for move in moves}
-        active_by_cell = {jump.cell: jump for jump in jumps}
+    def render(self, frame_state):
+        snapshot = frame_state.snapshot
+        active_by_start = {move.start: move for move in frame_state.moves}
+        active_by_cell = {jump.cell: jump for jump in frame_state.jumps}
         frame = self._background_frame()
 
         if snapshot.selected is not None:
@@ -72,15 +74,18 @@ class GraphicsRenderer:
             for col, token in enumerate(cells):
                 if token == ".":
                     continue
-                self._draw_piece(frame, (row, col), token, False, active_by_start, active_by_cell)
+                self._draw_piece(frame, (row, col), token, False, active_by_start, active_by_cell, frame_state)
 
         for cell, move in active_by_start.items():
-            self._draw_piece(frame, cell, move.piece, True, active_by_start, active_by_cell)
+            self._draw_piece(frame, cell, move.piece, True, active_by_start, active_by_cell, frame_state)
 
         if snapshot.game_over:
             self._draw_game_over(frame)
 
-        return self._with_side_panels(frame, white_history, black_history, white_score, black_score)
+        return self._with_side_panels(
+            frame, frame_state.white_history, frame_state.black_history,
+            frame_state.white_score, frame_state.black_score,
+        )
 
     def _with_side_panels(self, frame, white_history, black_history, white_score, black_score):
         channels = frame.img.shape[2]
@@ -95,7 +100,7 @@ class GraphicsRenderer:
         composed.img = np.hstack([white_panel.img, frame.img, black_panel.img])
         return composed
 
-    def _draw_piece(self, frame, cell, token, is_moving, active_by_start, active_by_cell):
+    def _draw_piece(self, frame, cell, token, is_moving, active_by_start, active_by_cell, frame_state):
         row, col = cell
         # `cell in active_by_cell` (built from the real jumps list, not
         # GameEngine.is_busy) is the only reliable "is this cell jumping"
@@ -104,19 +109,19 @@ class GraphicsRenderer:
         # happen while this same cell has already been reoccupied by a
         # different piece that isn't jumping at all.
         is_jumping = not is_moving and cell in active_by_cell
-        cause = None if (is_moving or is_jumping) else self._engine.cooldown_kind(cell)
+        cause = None if (is_moving or is_jumping) else frame_state.cooldowns.get(cell)
         rest_kind = self.REST_STATE_FOR_CAUSE.get(cause)
         state = self._state_machine.state_for(is_moving, is_jumping, rest_kind)
         frame_list = self._sprites.get(token, state)
         index = self._animator.current_frame_index(cell, token, state, len(frame_list))
 
         if is_moving:
-            x, y = self._position_resolver.pixel_position(active_by_start[cell], self._engine.clock)
+            x, y = self._position_resolver.pixel_position(active_by_start[cell], frame_state.clock)
         else:
             x, y = col * self._cell_size, row * self._cell_size
 
         if is_jumping:
-            offset = self._jump_offset_resolver.vertical_offset(active_by_cell[cell], self._engine.clock)
+            offset = self._jump_offset_resolver.vertical_offset(active_by_cell[cell], frame_state.clock)
             y -= offset
 
         sprite = frame_list[index]
@@ -125,7 +130,7 @@ class GraphicsRenderer:
         sprite.draw_on(frame, draw_x, draw_y)
 
         if rest_kind is not None:
-            self._draw_rest_overlay(frame, cell, rest_kind)
+            self._draw_rest_overlay(frame, cell, rest_kind, frame_state)
 
     def _background_frame(self):
         frame = Img()
@@ -157,14 +162,14 @@ class GraphicsRenderer:
             return (*bgr, 255)
         return bgr
 
-    def _draw_rest_overlay(self, frame, cell, rest_kind):
+    def _draw_rest_overlay(self, frame, cell, rest_kind, frame_state):
         """Overlay a translucent yellow bar on `cell` that shrinks from the
-        full cell height down to nothing as the engine's real cooldown for
-        this cell (long_rest after a move, short_rest after a jump) runs out."""
+        full cell height down to nothing as the real cooldown for this cell
+        (long_rest after a move, short_rest after a jump) runs out."""
         duration = self._rest_durations.get(rest_kind, 0)
         if duration <= 0:
             return
-        remaining = self._engine.cooldown_remaining(cell)
+        remaining = frame_state.cooldown_remaining.get(cell, 0)
         progress = max(0.0, min(1.0, remaining / duration))
         if progress <= 0:
             return

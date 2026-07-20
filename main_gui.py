@@ -26,11 +26,12 @@ from UI.rendering.piece_animator import PieceAnimator
 from UI.rendering.position_resolver import PositionResolver
 from UI.rendering.jump_offset_resolver import JumpOffsetResolver
 from UI.rendering.side_panel_renderer import SidePanelRenderer
+from view.snapshot import FrameState
 
 WINDOW_NAME = "KungFu Chess"
 
 
-def _build_renderer(engine, board, config):
+def _build_renderer(board, config):
     """Builds the GraphicsRenderer and everything drawing-related it needs
     (sprites, state machine, animator, position/jump resolvers, board
     background)."""
@@ -53,7 +54,6 @@ def _build_renderer(engine, board, config):
     )
 
     return GraphicsRenderer(
-        engine=engine,
         sprites=sprites,
         state_machine=state_machine,
         animator=animator,
@@ -98,9 +98,11 @@ def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
 
 def _run_loop(engine, controller, renderer, score_state, move_log_state):
     """Owns the cv2 window, mouse handling, and the frame-timing loop.
-    Drawing itself is delegated to `renderer` (a GraphicsRenderer). Score
-    and move-log values are polled from the bus-fed read models
-    (score_state/move_log_state) rather than the engine's own
+    Drawing itself is delegated to `renderer` (a GraphicsRenderer), which
+    takes no engine dependency at all - each frame's FrameState is built
+    here (the boundary between live engine state and pure render data) via
+    FrameState.from_engine, sourcing score/move-log from the bus-fed read
+    models (score_state/move_log_state) rather than the engine's own
     score()/move_history(), which remain the engine's internal source of
     truth and are still used elsewhere (e.g. tests)."""
     #cv2.namedWindow(WINDOW_NAME)
@@ -117,16 +119,12 @@ def _run_loop(engine, controller, renderer, score_state, move_log_state):
         last_frame = now
 
         engine.wait(elapsed_ms)
-        snapshot = engine.snapshot(selected=controller.selected)
         renderer.advance(elapsed_ms)
 
-        frame = renderer.render(
-            snapshot, engine.active_moves(), engine.active_jumps(),
-            move_log_state.entries_for("w"), move_log_state.entries_for("b"),
-            score_state.score_for("w"), score_state.score_for("b"),
-        )
+        frame_state = FrameState.from_engine(engine, controller, score_state, move_log_state)
+        frame = renderer.render(frame_state)
 
-        if snapshot.game_over:
+        if frame_state.snapshot.game_over:
             cv2.imshow(WINDOW_NAME, frame.img)
             cv2.waitKey(0)
             break
@@ -149,7 +147,7 @@ def main(config=settings):
     score_state, move_log_state, sound_handler, animation_handler = _build_bus_handlers(bus)
     engine, controller, board, bus = _build_game(board_lines, config, bus=bus)
 
-    renderer = _build_renderer(engine, board, config)
+    renderer = _build_renderer(board, config)
     _run_loop(engine, controller, renderer, score_state, move_log_state)
 
 
