@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+import pytest
 from websockets.asyncio.client import connect
 
 from server.game_server import run_server
@@ -102,6 +103,63 @@ def test_client_receives_a_move_made_broadcast_distinct_from_frame_update():
             assert payload["piece"] == "wP"
             assert payload["start"] == [6, 0]
             assert payload["end"] == [4, 0]
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_first_two_connections_get_white_and_black_third_gets_rejected():
+    async def scenario():
+        server_task = asyncio.create_task(run_server(host=TEST_HOST, port=TEST_PORT + 3))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as first:
+                first_payload = await _next_message_of_type(first, "assigned_color")
+                assert first_payload["color"] == "w"
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as second:
+                    second_payload = await _next_message_of_type(second, "assigned_color")
+                    assert second_payload["color"] == "b"
+
+                    async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as third:
+                        third_payload = await _next_message_of_type(third, "rejected")
+                        assert third_payload["reason"] == "game_full"
+
+                        # The server closes a rejected connection outright -
+                        # nothing further should ever arrive on it.
+                        with pytest.raises(Exception):
+                            await asyncio.wait_for(third.recv(), timeout=2)
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_a_freed_color_slot_is_reassigned_to_the_next_connection():
+    async def scenario():
+        server_task = asyncio.create_task(run_server(host=TEST_HOST, port=TEST_PORT + 4))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 4}") as first:
+                first_payload = await _next_message_of_type(first, "assigned_color")
+                assert first_payload["color"] == "w"
+
+            # `first` is now closed (its `async with` block exited) -
+            # SessionManager.release() should have freed "w" for reuse.
+            await asyncio.sleep(0.2)
+
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 4}") as second:
+                second_payload = await _next_message_of_type(second, "assigned_color")
+                assert second_payload["color"] == "w"
         finally:
             server_task.cancel()
             try:

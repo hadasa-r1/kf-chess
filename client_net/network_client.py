@@ -5,9 +5,12 @@ receiving incoming messages and dispatching each by its "type": a
 frame_update is decoded into a FrameState and handed to on_frame_update;
 a score_changed/move_made is handed, undecoded, to on_remote_event (whose
 job - see client_net/remote_event_source.py - is turning it back into a
-real bus event). No rendering, no cv2, nothing UI-specific - and kept in
-its own package (never imports from server/), since a client process must
-not depend on the server's internals.
+real bus event); an assigned_color's color string is handed to
+on_assigned_color; a rejected's reason string is handed to on_rejected
+(see server/session_manager.py for what assigns/rejects a connection). No
+rendering, no cv2, nothing UI-specific - and kept in its own package
+(never imports from server/), since a client process must not depend on
+the server's internals.
 """
 
 from __future__ import annotations
@@ -34,10 +37,13 @@ def deserialize_snapshot(payload):
 
 
 class NetworkClient:
-    def __init__(self, connection, on_frame_update, on_remote_event=None):
+    def __init__(self, connection, on_frame_update, on_remote_event=None,
+                 on_assigned_color=None, on_rejected=None):
         self._connection = connection
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
+        self._on_assigned_color = on_assigned_color
+        self._on_rejected = on_rejected
 
     async def send_click(self, x, y):
         await self._connection.send(json.dumps({"type": "click", "x": x, "y": y}))
@@ -67,5 +73,14 @@ class NetworkClient:
             elif message_type in ("score_changed", "move_made"):
                 if self._on_remote_event is not None:
                     self._on_remote_event(payload)
+            elif message_type == "assigned_color":
+                if self._on_assigned_color is not None:
+                    try:
+                        self._on_assigned_color(payload["color"])
+                    except KeyError as error:
+                        logger.warning("Dropping malformed assigned_color message %r: %s", message, error)
+            elif message_type == "rejected":
+                if self._on_rejected is not None:
+                    self._on_rejected(payload.get("reason"))
             else:
                 logger.warning("Dropping message with unrecognized type %r", message_type)

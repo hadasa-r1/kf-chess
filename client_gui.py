@@ -51,10 +51,12 @@ class _NetworkThread:
     this thread's own event loop, not the caller's.
     """
 
-    def __init__(self, uri, on_frame_update, on_remote_event):
+    def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected):
         self._uri = uri
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
+        self._on_assigned_color = on_assigned_color
+        self._on_rejected = on_rejected
         self._loop = None
         self._connection = None
         self._network_client = None
@@ -89,9 +91,33 @@ class _NetworkThread:
             self._connection = connection
             self._network_client = NetworkClient(
                 connection, on_frame_update=self._on_frame_update, on_remote_event=self._on_remote_event,
+                on_assigned_color=self._on_assigned_color, on_rejected=self._on_rejected,
             )
             self._ready.set()
             await self._network_client.run()
+
+
+class _ConnectionState:
+    """Shared holder for the two things the network thread learns before
+    any board data exists: which color we were assigned, or that the
+    server rejected us outright (a 3rd+ connection - see
+    server/session_manager.py). Plain attributes, not a lock-protected
+    read model like FrameStateCache: each is written at most once, by the
+    network thread, and only ever read from the main thread's loop."""
+
+    def __init__(self):
+        self.assigned_color = None
+        self.rejected_reason = None
+
+    def on_assigned_color(self, color):
+        print(f"Assigned color: {color}")
+        # TODO: display assigned color in UI more prominently than a
+        # window-title update (e.g. a side-panel label) - see _run_loop.
+        self.assigned_color = color
+
+    def on_rejected(self, reason):
+        print(f"Connection rejected by server: {reason}")
+        self.rejected_reason = reason
 
 
 def _connecting_frame(width=400, height=200):
@@ -99,6 +125,19 @@ def _connecting_frame(width=400, height=200):
     cv2.putText(
         frame, "Connecting...", (20, height // 2),
         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
+    )
+    return frame
+
+
+def _rejected_frame(reason, width=400, height=200):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.putText(
+        frame, "Connection rejected:", (20, height // 2 - 20),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
+    )
+    cv2.putText(
+        frame, str(reason), (20, height // 2 + 20),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
     )
     return frame
 
@@ -115,17 +154,23 @@ def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
         controller.jump(board_x, y)
 
 
-def _run_loop(network_thread, frame_cache, score_state, move_log_state, config):
+def _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state, config):
     """Owns the cv2 window, mouse handling, and the frame-timing loop -
     mirrors main_gui.py's _run_loop, except each frame's data comes from
     merge_display_data(frame_cache.latest(), ...) instead of a live
     engine, and the renderer/controller/mouse callback aren't built until
     the first frame_update arrives (there's no local Board to read
     width/height from before then - meanwhile a simple "Connecting..."
-    placeholder is shown)."""
+    placeholder is shown, or a "rejected" one if the server turned us
+    away as a 3rd+ connection - see server/session_manager.py)."""
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     while frame_cache.latest() is None:
+        if connection_state.rejected_reason is not None:
+            cv2.imshow(WINDOW_NAME, _rejected_frame(connection_state.rejected_reason))
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            return
         cv2.imshow(WINDOW_NAME, _connecting_frame())
         key = cv2.waitKey(50) & 0xFF
         if key == ord("q"):
@@ -136,6 +181,13 @@ def _run_loop(network_thread, frame_cache, score_state, move_log_state, config):
     board_mapper = BoardMapper(Board(first_snapshot.cells), config.CELL_SIZE)
     controller = RemoteController(network_thread, board_mapper)
     renderer = _build_renderer(first_snapshot.width, first_snapshot.height, config)
+
+    if connection_state.assigned_color is not None:
+        color_label = "White" if connection_state.assigned_color == "w" else "Black"
+        try:
+            cv2.setWindowTitle(WINDOW_NAME, f"{WINDOW_NAME} - You are {color_label}")
+        except Exception:
+            pass  # some OpenCV builds lack setWindowTitle - stdout print already covers it
 
     cv2.setMouseCallback(
         WINDOW_NAME,
@@ -171,6 +223,7 @@ def main(server_uri=None, config=settings):
     uri = server_uri or (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERVER_URI)
 
     frame_cache = FrameStateCache()
+    connection_state = _ConnectionState()
     local_bus = EventBus()
     remote_event_source = RemoteEventSource(local_bus)
     score_state = ScoreDisplayState(local_bus)
@@ -178,11 +231,12 @@ def main(server_uri=None, config=settings):
 
     network_thread = _NetworkThread(
         uri, on_frame_update=frame_cache.update, on_remote_event=remote_event_source.handle_message,
+        on_assigned_color=connection_state.on_assigned_color, on_rejected=connection_state.on_rejected,
     )
     network_thread.start()
 
     try:
-        _run_loop(network_thread, frame_cache, score_state, move_log_state, config)
+        _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state, config)
     finally:
         network_thread.stop()
 

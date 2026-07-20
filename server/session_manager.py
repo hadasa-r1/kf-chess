@@ -1,0 +1,53 @@
+"""Tracks connected clients in join order and assigns each a color.
+
+Single responsibility: connection-permission bookkeeping - "who's allowed
+to play, and as which color" - layered on top of Controller/GameEngine,
+neither of which know anything about color-restricted sessions. Local
+hotseat play (main_gui.py) never touches this class at all and keeps its
+existing no-color-restriction behavior exactly as before.
+
+Runs entirely on server/game_server.py's single asyncio event loop -
+there is no threading anywhere in server/ (confirmed by reading
+game_server.py: the tick loop and every connection handler are asyncio
+tasks on one loop, same as ConnectionManager's own assumption) - so no
+lock is needed here.
+"""
+
+from __future__ import annotations
+
+COLORS_IN_JOIN_ORDER = ("w", "b")
+
+
+class SessionManager:
+    def __init__(self):
+        self._colors_by_connection = {}
+
+    def assign_color(self, connection) -> str | None:
+        """Returns "w" for the 1st connection ever given a slot, "b" for
+        the 2nd, and None for the 3rd and beyond. Calling this again for a
+        connection that already has a color returns that same color
+        without consuming another slot."""
+        existing = self._colors_by_connection.get(connection)
+        if existing is not None:
+            return existing
+
+        taken = set(self._colors_by_connection.values())
+        for color in COLORS_IN_JOIN_ORDER:
+            if color not in taken:
+                self._colors_by_connection[connection] = color
+                return color
+
+        # TODO: viewers. A 3rd+ connection currently gets no color at all;
+        # server/game_server.py rejects it outright on a None return. A
+        # later task (the "Rooms" slide) should let it spectate instead.
+        return None
+
+    def release(self, connection) -> None:
+        """Stops tracking `connection`, freeing its color slot.
+
+        Simplification: there is no reconnection/resume-to-same-color
+        logic yet, so a disconnected player's color becomes immediately
+        available to whoever connects next rather than being reserved for
+        them to reclaim - full disconnect/resign handling is a separate,
+        later task."""
+        self._colors_by_connection.pop(connection, None)

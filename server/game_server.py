@@ -18,12 +18,20 @@ ScoreChangedEvent/MoveMadeEvent reach connected clients as small JSON
 messages too (see server/event_broadcast_handler.py) - a separate channel
 from the tick loop's frame_update broadcasts.
 
+A SessionManager assigns the 1st connection "w" and the 2nd "b" (a 3rd+
+is rejected outright - see session_manager.py's `# TODO: viewers`); each
+connection's real Controller is wrapped in a PlayerScopedController that
+enforces "you may only select your own color's pieces" on top of it,
+without game/controller.py itself knowing anything about color
+restriction (local hotseat play needs none).
+
 No login, no rooms, no matchmaking, no persistence - later steps.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -35,7 +43,12 @@ from game.controller import Controller
 from main import _build_game
 from server.connection_manager import ConnectionManager
 from server.event_broadcast_handler import EventBroadcastHandler
-from server.protocol import ClickCommand, JumpCommand, parse_command, serialize_frame_update
+from server.player_scoped_controller import PlayerScopedController
+from server.protocol import (
+    ClickCommand, JumpCommand, parse_command, serialize_assigned_color,
+    serialize_frame_update, serialize_rejected,
+)
+from server.session_manager import SessionManager
 from view.snapshot import cooldowns_from_engine
 # BOARD_FILE is a plain path constant with no cv2/UI machinery behind it
 # (UI/ui_config.py has no imports at all) - reused here rather than
@@ -90,8 +103,19 @@ async def _tick_loop(engine, connection_manager):
         await connection_manager.broadcast(payload)
 
 
-async def _handle_connection(connection, engine, board_mapper, connection_manager):
-    controller = Controller(engine=engine, board_mapper=board_mapper)
+async def _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager):
+    color = session_manager.assign_color(connection)
+    if color is None:
+        # TODO: viewers. Reject cleanly instead of letting a 3rd+
+        # connection spectate - that's a later task (the "Rooms" slide).
+        await connection.send(json.dumps(serialize_rejected("game_full")))
+        await connection.close()
+        return
+
+    await connection.send(json.dumps(serialize_assigned_color(color)))
+    controller = PlayerScopedController(
+        Controller(engine=engine, board_mapper=board_mapper), color, board, board_mapper,
+    )
     connection_manager.register(connection)
     try:
         async for message in connection:
@@ -102,16 +126,18 @@ async def _handle_connection(connection, engine, board_mapper, connection_manage
                 controller.jump(command.x, command.y)
     finally:
         connection_manager.unregister(connection)
+        session_manager.release(connection)
 
 
 async def run_server(host=HOST, port=PORT):
     engine, _controller, board, bus = _build_game(_load_board_lines(), settings)
     board_mapper = BoardMapper(board, settings.CELL_SIZE)
     connection_manager = ConnectionManager()
+    session_manager = SessionManager()
     event_broadcast_handler = EventBroadcastHandler(bus, connection_manager)
 
     async def handler(connection):
-        await _handle_connection(connection, engine, board_mapper, connection_manager)
+        await _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager)
 
     tick_task = asyncio.create_task(_tick_loop(engine, connection_manager))
     try:

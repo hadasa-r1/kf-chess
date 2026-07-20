@@ -111,3 +111,18 @@ def serialize_move_made(event):
         "end": list(event.end),
         "timestamp": event.timestamp,
     }
+
+
+def serialize_assigned_color(color):
+    """Sent once, immediately after a connection is accepted, telling the
+    client which color it may play (see server.session_manager.SessionManager
+    and server/game_server.py's connection handler)."""
+    return {"type": "assigned_color", "color": color}
+
+
+def serialize_rejected(reason):
+    """Sent to a connection SessionManager has no color slot left for (a
+    3rd+ concurrent player), immediately before the server closes it.
+    Viewer support for these connections is a later task - see
+    SessionManager's `# TODO: viewers`."""
+    return {"type": "rejected", "reason": reason}
