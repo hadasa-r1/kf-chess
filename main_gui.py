@@ -31,10 +31,13 @@ from view.snapshot import FrameState
 WINDOW_NAME = "KungFu Chess"
 
 
-def _build_renderer(board, config):
+def _build_renderer(width, height, config):
     """Builds the GraphicsRenderer and everything drawing-related it needs
     (sprites, state machine, animator, position/jump resolvers, board
-    background)."""
+    background). Takes board width/height directly (not a Board object) so
+    client_gui.py's networked entry point - which has no local Board - can
+    reuse this unchanged, sourcing width/height from the first
+    server-provided FrameState.snapshot instead."""
     asset_resolver = AssetResolver(ui_config.PIECES_DIR, ui_config.FOLDER_MAP, ui_config.STATE_MAP)
     sprites = PieceSprites(asset_resolver, config.CELL_SIZE)
     # Matches the same durations GameEngine actually enforces
@@ -62,8 +65,8 @@ def _build_renderer(board, config):
         rest_durations=rest_durations,
         board_bg=board_bg,
         cell_size=config.CELL_SIZE,
-        board_width=board.width,
-        board_height=board.height,
+        board_width=width,
+        board_height=height,
         side_panel_renderer=side_panel_renderer,
     )
 
@@ -147,7 +150,7 @@ def main(config=settings):
     score_state, move_log_state, sound_handler, animation_handler = _build_bus_handlers(bus)
     engine, controller, board, bus = _build_game(board_lines, config, bus=bus)
 
-    renderer = _build_renderer(board, config)
+    renderer = _build_renderer(board.width, board.height, config)
     _run_loop(engine, controller, renderer, score_state, move_log_state)
 
 

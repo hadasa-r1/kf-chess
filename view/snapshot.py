@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from realtime.models import Move, Jump
+
 
 @dataclass(frozen=True)
 class GameSnapshot:
@@ -75,12 +77,7 @@ class FrameState:
         engine dependency for the two fields that don't need one.
         """
         snapshot = engine.snapshot(selected=controller.selected)
-        occupied_cells = [
-            (row, col)
-            for row, cells in enumerate(snapshot.cells)
-            for col, token in enumerate(cells)
-            if token != "."
-        ]
+        cooldowns, cooldown_remaining = cooldowns_from_engine(engine, snapshot)
         return cls(
             snapshot=snapshot,
             moves=tuple(engine.active_moves()),
@@ -90,6 +87,69 @@ class FrameState:
             white_score=score_state.score_for("w"),
             black_score=score_state.score_for("b"),
             clock=engine.clock,
-            cooldowns={cell: engine.cooldown_kind(cell) for cell in occupied_cells},
-            cooldown_remaining={cell: engine.cooldown_remaining(cell) for cell in occupied_cells},
+            cooldowns=cooldowns,
+            cooldown_remaining=cooldown_remaining,
         )
+
+    @classmethod
+    def from_network_payload(cls, payload):
+        """The network-play mirror of `from_engine`: reconstructs a full
+        FrameState from a server "frame_update" message (see
+        server.protocol.serialize_frame_update) instead of a live engine.
+
+        Moves/jumps/clock/cooldowns/cooldown_remaining arrive over the
+        wire. white_history/black_history/white_score/black_score do not -
+        # TODO: history/score arrive via event channel (a separate,
+        # later task) - until then they are always empty/zero here,
+        # regardless of what the real engine's history/score are.
+        """
+        selected = payload["selected"]
+        snapshot = GameSnapshot(
+            cells=tuple(tuple(row) for row in payload["cells"]),
+            width=payload["width"],
+            height=payload["height"],
+            game_over=payload["game_over"],
+            selected=tuple(selected) if selected is not None else None,
+        )
+        moves = tuple(
+            Move(piece=m["piece"], start=tuple(m["start"]), end=tuple(m["end"]), arrival=m["arrival"])
+            for m in payload["moves"]
+        )
+        jumps = tuple(
+            Jump(piece=j["piece"], cell=tuple(j["cell"]), end_time=j["end_time"])
+            for j in payload["jumps"]
+        )
+        cooldowns = {tuple(cell): kind for cell, kind in payload["cooldowns"]}
+        cooldown_remaining = {tuple(cell): remaining for cell, remaining in payload["cooldown_remaining"]}
+        return cls(
+            snapshot=snapshot,
+            moves=moves,
+            jumps=jumps,
+            white_history=(),  # TODO: history/score arrive via event channel
+            black_history=(),  # TODO: history/score arrive via event channel
+            white_score=0,  # TODO: history/score arrive via event channel
+            black_score=0,  # TODO: history/score arrive via event channel
+            clock=payload["clock"],
+            cooldowns=cooldowns,
+            cooldown_remaining=cooldown_remaining,
+        )
+
+
+def cooldowns_from_engine(engine, snapshot):
+    """Cell -> cooldown-kind / cell -> cooldown-remaining maps for every
+    currently-occupied cell in `snapshot`, computed directly from a live
+    engine. Shared by FrameState.from_engine (local play) and
+    server/game_server.py's tick loop (networked play, which needs the
+    same two maps to build its wire payload but has no per-connection
+    Controller/read-models to build a whole FrameState with) - kept in one
+    place so the two never drift apart.
+    """
+    occupied_cells = [
+        (row, col)
+        for row, cells in enumerate(snapshot.cells)
+        for col, token in enumerate(cells)
+        if token != "."
+    ]
+    cooldowns = {cell: engine.cooldown_kind(cell) for cell in occupied_cells}
+    cooldown_remaining = {cell: engine.cooldown_remaining(cell) for cell in occupied_cells}
+    return cooldowns, cooldown_remaining

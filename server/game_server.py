@@ -13,6 +13,11 @@ concurrent pieces:
 - the websockets per-connection handler that turns incoming click/jump
   commands into calls on that connection's own Controller.
 
+Also constructs an EventBroadcastHandler on the engine's bus, so
+ScoreChangedEvent/MoveMadeEvent reach connected clients as small JSON
+messages too (see server/event_broadcast_handler.py) - a separate channel
+from the tick loop's frame_update broadcasts.
+
 No login, no rooms, no matchmaking, no persistence - later steps.
 """
 
@@ -29,7 +34,9 @@ from game.board_mapper import BoardMapper
 from game.controller import Controller
 from main import _build_game
 from server.connection_manager import ConnectionManager
-from server.protocol import ClickCommand, JumpCommand, parse_command, serialize_snapshot
+from server.event_broadcast_handler import EventBroadcastHandler
+from server.protocol import ClickCommand, JumpCommand, parse_command, serialize_frame_update
+from view.snapshot import cooldowns_from_engine
 # BOARD_FILE is a plain path constant with no cv2/UI machinery behind it
 # (UI/ui_config.py has no imports at all) - reused here rather than
 # duplicating the same literal path in a second place.
@@ -48,9 +55,15 @@ def _load_board_lines():
 
 
 async def _tick_loop(engine, connection_manager):
-    """Advances the engine's clock and broadcasts a snapshot roughly every
-    TICK_INTERVAL_SECONDS, using the actual elapsed wall time (not a fixed
-    constant) so event-loop jitter never desyncs the game clock."""
+    """Advances the engine's clock and broadcasts a frame_update roughly
+    every TICK_INTERVAL_SECONDS, using the actual elapsed wall time (not a
+    fixed constant) so event-loop jitter never desyncs the game clock.
+
+    The broadcast payload carries everything a remote client needs to
+    rebuild a full FrameState (moves/jumps/clock/cooldowns) - not just a
+    bare snapshot - so networked clients can render in-flight motion and
+    cooldown overlays exactly like local play. History/score are excluded
+    on purpose (see server.protocol.serialize_frame_update)."""
     last_tick = time.monotonic()
     while True:
         await asyncio.sleep(TICK_INTERVAL_SECONDS)
@@ -65,7 +78,16 @@ async def _tick_loop(engine, connection_manager):
         # Broadcasting a per-client-selected view needs per-client
         # differentiated broadcasting, out of scope for this step.
         snapshot = engine.snapshot(selected=None)
-        await connection_manager.broadcast(serialize_snapshot(snapshot))
+        cooldowns, cooldown_remaining = cooldowns_from_engine(engine, snapshot)
+        payload = serialize_frame_update(
+            snapshot=snapshot,
+            moves=engine.active_moves(),
+            jumps=engine.active_jumps(),
+            clock=engine.clock,
+            cooldowns=cooldowns,
+            cooldown_remaining=cooldown_remaining,
+        )
+        await connection_manager.broadcast(payload)
 
 
 async def _handle_connection(connection, engine, board_mapper, connection_manager):
@@ -83,9 +105,10 @@ async def _handle_connection(connection, engine, board_mapper, connection_manage
 
 
 async def run_server(host=HOST, port=PORT):
-    engine, _controller, board, _bus = _build_game(_load_board_lines(), settings)
+    engine, _controller, board, bus = _build_game(_load_board_lines(), settings)
     board_mapper = BoardMapper(board, settings.CELL_SIZE)
     connection_manager = ConnectionManager()
+    event_broadcast_handler = EventBroadcastHandler(bus, connection_manager)
 
     async def handler(connection):
         await _handle_connection(connection, engine, board_mapper, connection_manager)
