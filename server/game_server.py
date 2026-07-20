@@ -85,14 +85,13 @@ async def _tick_loop(engine, connection_manager):
         last_tick = now
 
         engine.wait(elapsed_ms)
-        # TODO: per-client selected. The server has no single "selected"
-        # concept - each client has its own Controller.selected - so every
-        # client currently gets the same snapshot with no highlight.
-        # Broadcasting a per-client-selected view needs per-client
-        # differentiated broadcasting, out of scope for this step.
+        # `selected=None` here is a placeholder - the per-connection loop
+        # below overwrites "selected" with each client's own
+        # Controller.selected before sending, since the server has no
+        # single shared "selected" concept.
         snapshot = engine.snapshot(selected=None)
         cooldowns, cooldown_remaining = cooldowns_from_engine(engine, snapshot)
-        payload = serialize_frame_update(
+        base_payload = serialize_frame_update(
             snapshot=snapshot,
             moves=engine.active_moves(),
             jumps=engine.active_jumps(),
@@ -100,7 +99,15 @@ async def _tick_loop(engine, connection_manager):
             cooldowns=cooldowns,
             cooldown_remaining=cooldown_remaining,
         )
-        await connection_manager.broadcast(payload)
+        for connection in connection_manager.connections():
+            controller = connection_manager.controller_for(connection)
+            if controller is None:
+                continue  # disconnected between building the list and this lookup
+            personalized_payload = dict(base_payload)
+            personalized_payload["selected"] = (
+                list(controller.selected) if controller.selected is not None else None
+            )
+            await connection_manager.send(connection, personalized_payload)
 
 
 async def _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager):
@@ -116,7 +123,7 @@ async def _handle_connection(connection, engine, board, board_mapper, connection
     controller = PlayerScopedController(
         Controller(engine=engine, board_mapper=board_mapper), color, board, board_mapper,
     )
-    connection_manager.register(connection)
+    connection_manager.register(connection, controller)
     try:
         async for message in connection:
             command = parse_command(message)

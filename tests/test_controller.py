@@ -107,3 +107,21 @@ def test_jump_outside_board_is_ignored():
     controller, engine, board = make_controller([["wK", "."], [".", "."]])
     controller.jump(-10, -10)  # out of bounds: no crash, no selection
     assert controller.selected is None
+
+
+def test_deselect_clears_an_active_selection():
+    controller, engine, board = make_controller([["wK", "."], [".", "."]])
+    controller.click(*cell_to_pixel(0, 0))
+    assert controller.selected == (0, 0)
+
+    controller.deselect()
+
+    assert controller.selected is None
+
+
+def test_deselect_with_no_active_selection_is_a_harmless_no_op():
+    controller, engine, board = make_controller([["wK", "."], [".", "."]])
+
+    controller.deselect()  # must not raise
+
+    assert controller.selected is None

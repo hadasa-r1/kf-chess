@@ -1,7 +1,8 @@
 import asyncio
+from dataclasses import dataclass
 
 from bus.event_bus import EventBus
-from bus.events import GameStartedEvent, MoveMadeEvent, ScoreChangedEvent
+from bus.events import Event, GameEndedEvent, GameStartedEvent, InvalidMoveEvent, MoveMadeEvent, ScoreChangedEvent
 from server.event_broadcast_handler import EventBroadcastHandler
 
 
@@ -45,9 +46,34 @@ def test_move_made_event_triggers_exactly_one_broadcast():
     ]
 
 
+def test_invalid_move_event_triggers_exactly_one_broadcast():
+    event = InvalidMoveEvent(reason="on_cooldown", start=(0, 0), end=(0, 1))
+    connection_manager = _publish_and_let_broadcast_run(event)
+
+    assert connection_manager.broadcasts == [
+        {"type": "invalid_move", "reason": "on_cooldown", "start": [0, 0], "end": [0, 1]},
+    ]
+
+
+def test_game_started_event_triggers_exactly_one_broadcast():
+    event = GameStartedEvent(white_player="w", black_player="b")
+    connection_manager = _publish_and_let_broadcast_run(event)
+
+    assert connection_manager.broadcasts == [{"type": "game_started", "white_player": "w", "black_player": "b"}]
+
+
+def test_game_ended_event_triggers_exactly_one_broadcast():
+    event = GameEndedEvent(winner="w", reason="king_captured")
+    connection_manager = _publish_and_let_broadcast_run(event)
+
+    assert connection_manager.broadcasts == [{"type": "game_ended", "winner": "w", "reason": "king_captured"}]
+
+
 def test_unrelated_event_does_not_trigger_a_broadcast():
-    connection_manager = _publish_and_let_broadcast_run(
-        GameStartedEvent(white_player="w", black_player="b"),
-    )
+    @dataclass(frozen=True)
+    class _SomeOtherEvent(Event):
+        value: int
+
+    connection_manager = _publish_and_let_broadcast_run(_SomeOtherEvent(value=1))
 
     assert connection_manager.broadcasts == []

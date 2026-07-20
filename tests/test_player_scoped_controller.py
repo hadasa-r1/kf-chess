@@ -1,5 +1,15 @@
+from config import settings
+from bus.event_bus import EventBus
 from board.board import Board
+from rules.rule_registry import build_default_registry
+from rules.rule_engine import RuleEngine
+from rules.game_conditions import KingCaptureWinCondition, LastRankPromotion
+from realtime.real_time_arbiter import RealTimeArbiter
+from game.engine import GameEngine
 from game.board_mapper import BoardMapper
+from game.controller import Controller
+from game.move_history import MoveHistory
+from game.score_board import ScoreBoard
 from server.player_scoped_controller import PlayerScopedController
 
 
@@ -104,3 +114,75 @@ def test_selected_property_delegates_to_the_wrapped_controller():
     controller.selected = (3, 3)
 
     assert scoped.selected == (3, 3)
+
+
+def _make_real(rows, assigned_color):
+    """Wraps a REAL Controller/GameEngine (not the fake above) - needed to
+    reproduce the actual bug: Controller._resolve_selection's color-blind
+    re-select (see its docstring in game/controller.py) only exists in the
+    real Controller, not in _FakeController's simple call recorder."""
+    board = Board(rows)
+    registry = build_default_registry(settings)
+    engine = GameEngine(
+        board=board,
+        rule_engine=RuleEngine(rule_registry=registry, config=settings),
+        arbiter=RealTimeArbiter(board=board, promotion_rule=LastRankPromotion(settings.PAWN_DIRECTION), config=settings),
+        win_condition=KingCaptureWinCondition(),
+        config=settings,
+        history=MoveHistory(),
+        score_board=ScoreBoard(settings.PIECE_VALUES),
+        event_bus=EventBus(),
+    )
+    mapper = BoardMapper(board, settings.CELL_SIZE)
+    controller = Controller(engine=engine, board_mapper=mapper)
+    scoped = PlayerScopedController(controller, assigned_color, board, mapper)
+    return scoped, controller, engine, board
+
+
+def _cell_pixel(row, col):
+    return col * settings.CELL_SIZE, row * settings.CELL_SIZE
+
+
+def test_illegal_second_click_onto_enemy_piece_deselects_instead_of_taking_it():
+    # The reported bug: Controller's own color-blind re-select (see its
+    # docstring) would otherwise leave `selected` pointing at the black
+    # rook after this rejected knight move - PlayerScopedController must
+    # catch that and clear it instead, since this connection is White.
+    rows = [["wN", ".", "."], [".", "bR", "."], [".", ".", "."]]
+    scoped, controller, engine, board = _make_real(rows, "w")
+
+    scoped.click(*_cell_pixel(0, 0))  # select own knight
+    assert scoped.selected == (0, 0)
+
+    scoped.click(*_cell_pixel(1, 1))  # illegal knight move onto the enemy rook
+
+    assert scoped.selected is None
+    assert board.get(1, 1) == "bR"  # the enemy piece was never actually taken
+
+
+def test_illegal_second_click_onto_enemy_piece_deselects_for_black_too():
+    # Symmetric case: assigned_color="b" clicking into a white piece.
+    rows = [["bN", ".", "."], [".", "wR", "."], [".", ".", "."]]
+    scoped, controller, engine, board = _make_real(rows, "b")
+
+    scoped.click(*_cell_pixel(0, 0))  # select own knight
+    assert scoped.selected == (0, 0)
+
+    scoped.click(*_cell_pixel(1, 1))  # illegal knight move onto the enemy rook
+
+    assert scoped.selected is None
+    assert board.get(1, 1) == "wR"
+
+
+def test_legitimate_second_click_still_moves_own_piece_normally():
+    # Regression guard: a legal move to an empty destination must still
+    # work and end with no selection, same as a real Controller's own
+    # behavior - the new post-move ownership check must not interfere.
+    rows = [["wR", ".", "."], [".", ".", "."], [".", ".", "."]]
+    scoped, controller, engine, board = _make_real(rows, "w")
+
+    scoped.click(*_cell_pixel(0, 0))  # select own rook
+    scoped.click(*_cell_pixel(0, 2))  # legal rook move to an empty cell
+
+    assert scoped.selected is None
+    assert board.is_empty(0, 0)  # source clears the instant the move starts

@@ -1,10 +1,10 @@
-"""Translates score_changed/move_made network messages back into real
-ScoreChangedEvent/MoveMadeEvent instances and publishes them on a local,
-client-side EventBus - so the existing ScoreDisplayState/
-MoveLogDisplayState (bus_handlers/, completely unmodified) can subscribe
-to that bus exactly as they already do server-side. No UI knowledge, no
-rendering, no idea these events originated over a network rather than
-from a live engine.
+"""Translates score_changed/move_made/invalid_move/game_started/game_ended
+network messages back into real event instances and publishes them on a
+local, client-side EventBus - so the existing ScoreDisplayState/
+MoveLogDisplayState/SoundHandler/AnimationTriggerHandler (bus_handlers/,
+completely unmodified) can subscribe to that bus exactly as they already
+do server-side. No UI knowledge, no rendering, no idea these events
+originated over a network rather than from a live engine.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from bus.event_bus import EventBus
-from bus.events import MoveMadeEvent, ScoreChangedEvent
+from bus.events import GameEndedEvent, GameStartedEvent, InvalidMoveEvent, MoveMadeEvent, ScoreChangedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ class RemoteEventSource:
 
     def handle_message(self, payload: dict) -> None:
         """Reconstructs and publishes the event carried by one decoded
-        score_changed/move_made message. An unrecognized type or a
-        malformed payload is logged and dropped, never raised."""
+        message. An unrecognized type or a malformed payload is logged
+        and dropped, never raised."""
         message_type = payload.get("type")
         try:
             if message_type == "score_changed":
@@ -37,6 +37,19 @@ class RemoteEventSource:
                     end=tuple(payload["end"]),
                     timestamp=payload["timestamp"],
                 )
+            elif message_type == "invalid_move":
+                event = InvalidMoveEvent(
+                    reason=payload["reason"],
+                    start=tuple(payload["start"]),
+                    end=tuple(payload["end"]),
+                )
+            elif message_type == "game_started":
+                event = GameStartedEvent(
+                    white_player=payload["white_player"],
+                    black_player=payload["black_player"],
+                )
+            elif message_type == "game_ended":
+                event = GameEndedEvent(winner=payload["winner"], reason=payload["reason"])
             else:
                 logger.warning("RemoteEventSource: unrecognized message type %r", message_type)
                 return

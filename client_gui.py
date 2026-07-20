@@ -26,8 +26,12 @@ from websockets.asyncio.client import connect
 
 from board.board import Board
 from bus.event_bus import EventBus
+from bus_handlers.animation_trigger_handler import AnimationTriggerHandler
+from bus_handlers.audio_sound_player import AudioSoundPlayer
+from bus_handlers.graphics_animation_trigger import GraphicsAnimationTrigger
 from bus_handlers.move_log_display_state import MoveLogDisplayState
 from bus_handlers.score_display_state import ScoreDisplayState
+from bus_handlers.sound_handler import SoundHandler
 from client_net.frame_state_cache import FrameStateCache
 from client_net.frame_state_merge import merge_display_data
 from client_net.network_client import NetworkClient
@@ -228,6 +232,13 @@ def main(server_uri=None, config=settings):
     remote_event_source = RemoteEventSource(local_bus)
     score_state = ScoreDisplayState(local_bus)
     move_log_state = MoveLogDisplayState(local_bus)
+    # Kept in a local variable for main()'s whole lifetime (mirroring
+    # main_gui.py's _build_bus_handlers) - EventBus.subscribe holds a plain
+    # reference to the bound method, but nothing keeps the handler object
+    # itself alive without this, and a garbage-collected handler would
+    # silently stop reacting to published events.
+    sound_handler = SoundHandler(local_bus, AudioSoundPlayer())
+    animation_handler = AnimationTriggerHandler(local_bus, GraphicsAnimationTrigger())
 
     network_thread = _NetworkThread(
         uri, on_frame_update=frame_cache.update, on_remote_event=remote_event_source.handle_message,

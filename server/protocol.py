@@ -113,6 +113,31 @@ def serialize_move_made(event):
     }
 
 
+def serialize_invalid_move(event):
+    """Turn an InvalidMoveEvent into a small, purpose-specific JSON
+    message - a distinct "type" from frame_update, so a client can tell
+    them apart."""
+    return {
+        "type": "invalid_move",
+        "reason": event.reason,
+        "start": list(event.start),
+        "end": list(event.end),
+    }
+
+
+def serialize_game_started(event):
+    """Turn a GameStartedEvent into a small, purpose-specific JSON
+    message - a distinct "type" from frame_update, so a client can tell
+    them apart."""
+    return {"type": "game_started", "white_player": event.white_player, "black_player": event.black_player}
+
+
+def serialize_game_ended(event):
+    """Turn a GameEndedEvent into a small, purpose-specific JSON message -
+    a distinct "type" from frame_update, so a client can tell them apart."""
+    return {"type": "game_ended", "winner": event.winner, "reason": event.reason}
+
+
 def serialize_assigned_color(color):
     """Sent once, immediately after a connection is accepted, telling the
     client which color it may play (see server.session_manager.SessionManager

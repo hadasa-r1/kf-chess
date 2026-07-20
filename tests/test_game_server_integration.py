@@ -144,6 +144,53 @@ def test_first_two_connections_get_white_and_black_third_gets_rejected():
     asyncio.run(scenario())
 
 
+def test_each_connection_receives_its_own_selected_cell_in_frame_update():
+    # Two connections each select a different one of their own pieces -
+    # confirms the tick loop's per-connection "selected" personalization
+    # (server/connection_manager.py's controller_for/send) actually gives
+    # each client its own Controller.selected, not the other's and not
+    # null, even though both share one broadcast engine snapshot.
+    async def scenario():
+        server_task = asyncio.create_task(run_server(host=TEST_HOST, port=TEST_PORT + 5))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 5}") as first:
+                first_assigned = await _next_message_of_type(first, "assigned_color")
+                assert first_assigned["color"] == "w"
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 5}") as second:
+                    second_assigned = await _next_message_of_type(second, "assigned_color")
+                    assert second_assigned["color"] == "b"
+
+                    # White pawn at row 6, col 0 -> pixel (0, 600).
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                    # Black pawn at row 1, col 0 -> pixel (0, 100).
+                    await second.send(json.dumps({"type": "click", "x": 0, "y": 100}))
+
+                    first_payload = None
+                    for _ in range(20):
+                        first_payload = await _next_message_of_type(first, "frame_update")
+                        if first_payload["selected"] is not None:
+                            break
+
+                    second_payload = None
+                    for _ in range(20):
+                        second_payload = await _next_message_of_type(second, "frame_update")
+                        if second_payload["selected"] is not None:
+                            break
+
+                    assert first_payload["selected"] == [6, 0]
+                    assert second_payload["selected"] == [1, 0]
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
 def test_a_freed_color_slot_is_reassigned_to_the_next_connection():
     async def scenario():
         server_task = asyncio.create_task(run_server(host=TEST_HOST, port=TEST_PORT + 4))

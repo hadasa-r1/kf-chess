@@ -17,6 +17,12 @@ class Controller:
     def selected(self):
         return self._selected
 
+    def deselect(self):
+        """Clears the current selection without going through a click -
+        for external callers (e.g. a networked ownership guard) that need
+        to cancel a selection Controller itself would otherwise keep."""
+        self._selected = None
+
     def click(self, x, y):
         cell = self._mapper.pixel_to_cell(x, y)
         if cell is None:

@@ -1,5 +1,5 @@
 from bus.event_bus import EventBus
-from bus.events import MoveMadeEvent, ScoreChangedEvent
+from bus.events import GameEndedEvent, GameStartedEvent, InvalidMoveEvent, MoveMadeEvent, ScoreChangedEvent
 from bus_handlers.move_log_display_state import MoveLogDisplayState
 from bus_handlers.score_display_state import ScoreDisplayState
 from client_net.remote_event_source import RemoteEventSource
@@ -30,6 +30,41 @@ def test_move_made_message_publishes_a_real_move_made_event():
     assert received == [MoveMadeEvent(color="w", piece="wR", start=(0, 0), end=(0, 2), timestamp=1000)]
 
 
+def test_invalid_move_message_publishes_a_real_invalid_move_event():
+    bus = EventBus()
+    received = []
+    bus.subscribe(InvalidMoveEvent, received.append)
+    source = RemoteEventSource(bus)
+
+    source.handle_message({
+        "type": "invalid_move", "reason": "on_cooldown", "start": [0, 0], "end": [0, 1],
+    })
+
+    assert received == [InvalidMoveEvent(reason="on_cooldown", start=(0, 0), end=(0, 1))]
+
+
+def test_game_started_message_publishes_a_real_game_started_event():
+    bus = EventBus()
+    received = []
+    bus.subscribe(GameStartedEvent, received.append)
+    source = RemoteEventSource(bus)
+
+    source.handle_message({"type": "game_started", "white_player": "w", "black_player": "b"})
+
+    assert received == [GameStartedEvent(white_player="w", black_player="b")]
+
+
+def test_game_ended_message_publishes_a_real_game_ended_event():
+    bus = EventBus()
+    received = []
+    bus.subscribe(GameEndedEvent, received.append)
+    source = RemoteEventSource(bus)
+
+    source.handle_message({"type": "game_ended", "winner": "w", "reason": "king_captured"})
+
+    assert received == [GameEndedEvent(winner="w", reason="king_captured")]
+
+
 def test_unrecognized_type_does_not_publish_and_does_not_raise():
     bus = EventBus()
     received = []
@@ -37,7 +72,7 @@ def test_unrecognized_type_does_not_publish_and_does_not_raise():
     bus.subscribe(MoveMadeEvent, received.append)
     source = RemoteEventSource(bus)
 
-    source.handle_message({"type": "game_started", "white_player": "w", "black_player": "b"})  # must not raise
+    source.handle_message({"type": "some_future_message_type"})  # must not raise
 
     assert received == []
 
