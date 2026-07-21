@@ -16,11 +16,16 @@ across every room - accounts and ratings don't belong to any one room.
 
 Once logged in, a connection's NEXT message must be a room command -
 either {"type": "room", "action": "create"} (starts a brand new
-GameSession) or {"type": "room", "action": "join", "room_name": <id>}
+GameSession), {"type": "room", "action": "join", "room_name": <id>}
 (joins an existing one, or gets room_not_found + closed if that id
-doesn't exist). Only once a GameSession is resolved does the existing
-color-assignment/Controller-wrapping flow proceed, entirely against that
-session's own SessionManager/ConnectionManager/engine/board/board_mapper.
+doesn't exist), or {"type": "room", "action": "play"} (quick-match: finds
+an opponent within +/-100 ELO via Matchmaker (server/matchmaker.py),
+waiting up to 60s, or gets rejected("no_match_found") + closed if nobody
+suitable ever arrives). All three converge on the exact same
+color-assignment/Controller-wrapping flow once a GameSession is resolved,
+entirely against that session's own SessionManager/ConnectionManager/
+engine/board/board_mapper - a matched game is just an ordinary 2-player
+room from that point on, with nothing matchmaking-specific about it.
 
 A mid-game disconnect doesn't resign the player immediately: their color
 slot/Controller registration (within their room's own SessionManager/
@@ -60,6 +65,7 @@ from websockets.asyncio.server import serve
 
 from config import settings
 from game.controller import Controller
+from server.matchmaker import Matchmaker
 from server.player_scoped_controller import PlayerScopedController
 from server.protocol import (
     ClickCommand, JumpCommand, LoginCommand, RoomCommand, parse_command, serialize_assigned_color,
@@ -116,7 +122,7 @@ async def _run_as_player(connection, messages, connection_manager, session_manag
         asyncio.create_task(session.disconnect_resign_handler.start_countdown(color))
 
 
-async def _handle_connection(connection, room_registry, user_registry, user_store):
+async def _handle_connection(connection, room_registry, user_registry, user_store, matchmaker):
     # A connection's very first message must be a login - checked here,
     # before anything else, by pulling one message off the same async
     # iterator the rest of the handler uses below (so nothing sent after
@@ -158,6 +164,7 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
         is_join = (
             isinstance(room_command, RoomCommand) and room_command.action == "join" and bool(room_command.room_name)
         )
+        is_play = isinstance(room_command, RoomCommand) and room_command.action == "play"
         if isinstance(room_command, RoomCommand) and room_command.action == "create":
             session = room_registry.create_room()
             await connection.send(json.dumps(serialize_room_created(session.room_id)))
@@ -165,6 +172,20 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
             session = room_registry.get_room(room_command.room_name)
             if session is None:
                 await connection.send(json.dumps(serialize_room_not_found(room_command.room_name)))
+                await connection.close()
+                return
+            await connection.send(json.dumps(serialize_room_joined(session.room_id)))
+        elif is_play:
+            # Quick-match: find any opponent within +/-100 ELO who is also
+            # looking (server/matchmaker.py), waiting up to its own
+            # configured timeout. A match reuses serialize_room_joined -
+            # from the client's point of view, "you're now in this room"
+            # looks identical whether created/joined/matched into it - and
+            # converges on the exact same downstream flow below, same as
+            # "create"/"join".
+            session = await matchmaker.find_match(username)
+            if session is None:
+                await connection.send(json.dumps(serialize_rejected("no_match_found")))
                 await connection.close()
                 return
             await connection.send(json.dumps(serialize_room_joined(session.room_id)))
@@ -218,21 +239,27 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
         user_registry.logout(connection)
 
 
-async def run_server(host=HOST, port=PORT, user_db_path=None, disconnect_countdown_seconds=None):
-    # `user_db_path`/`disconnect_countdown_seconds` are overridable (rather
-    # than always settings.USER_DB_PATH / the 20s default) so tests can use
-    # a throwaway file and a short countdown instead of ever touching the
-    # real database or waiting 20 real seconds - see
-    # tests/test_game_server_integration.py. Both flow down into every
-    # GameSession a room command creates, via RoomRegistry.
+async def run_server(host=HOST, port=PORT, user_db_path=None, disconnect_countdown_seconds=None,
+                      matchmaking_wait_seconds=None):
+    # `user_db_path`/`disconnect_countdown_seconds`/`matchmaking_wait_seconds`
+    # are overridable (rather than always settings.USER_DB_PATH / the 20s
+    # and 60s defaults) so tests can use a throwaway file and short
+    # timeouts instead of ever touching the real database or waiting a
+    # real 20/60 seconds - see tests/test_game_server_integration.py.
+    # user_db_path/disconnect_countdown_seconds flow down into every
+    # GameSession a room command creates, via RoomRegistry; matchmaker is
+    # global (not per-room), same as user_registry/user_store, since
+    # matching happens BEFORE any room exists.
     user_registry = UserRegistry()
     user_store = UserStore(user_db_path or settings.USER_DB_PATH)
     room_registry = RoomRegistry(
         user_store, user_registry, disconnect_countdown_seconds=disconnect_countdown_seconds,
     )
+    matchmaker_kwargs = {} if matchmaking_wait_seconds is None else {"wait_seconds": matchmaking_wait_seconds}
+    matchmaker = Matchmaker(user_store, room_registry, **matchmaker_kwargs)
 
     async def handler(connection):
-        await _handle_connection(connection, room_registry, user_registry, user_store)
+        await _handle_connection(connection, room_registry, user_registry, user_store, matchmaker)
 
     async with serve(handler, host, port):
         await asyncio.Future()  # run until cancelled (Ctrl+C, or a test)

@@ -75,8 +75,12 @@ def parse_command(text):
             logger.warning("Dropping malformed command %r: %s", text, error)
             return None
         # "room_name" only matters for a "join" - not present at all for a
-        # "create", so (unlike username/password above) this is optional
-        # shape, not a parsing failure.
+        # "create" or a "play" (server/matchmaker.py's quick-match option,
+        # which finds a room automatically rather than naming one), so
+        # (unlike username/password above) this is optional shape, not a
+        # parsing failure. No dedicated dataclass/branch for "play" here -
+        # any action string parses into a RoomCommand the same way;
+        # server/game_server.py is what decides which actions are valid.
         room_name = payload.get("room_name")
         if room_name is not None:
             room_name = str(room_name)

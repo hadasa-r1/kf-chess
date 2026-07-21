@@ -84,6 +84,9 @@ class NetworkClient:
     async def send_room_join(self, room_name):
         await self._connection.send(json.dumps({"type": "room", "action": "join", "room_name": room_name}))
 
+    async def send_room_play(self):
+        await self._connection.send(json.dumps({"type": "room", "action": "play"}))
+
     async def send_click(self, x, y):
         await self._connection.send(json.dumps({"type": "click", "x": x, "y": y}))
 

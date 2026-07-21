@@ -18,13 +18,14 @@ see server/user_store.py) before color assignment (see
 server/game_server.py). Once logged in, a native tkinter dialog (a
 "windows message with text box and buttons", per the Rooms slide's own
 requirement - unlike login, which stays a shell prompt) asks the player
-to Create or Join a room (or Cancel) before any color assignment or cv2
-window.
+to Create or Join a room, quick-match via Play (finds any opponent within
++/-100 ELO - see server/matchmaker.py - waiting up to 60s before giving
+up), or Cancel, before any color assignment or cv2 window.
 
 Out of scope, left as follow-ups: InvalidMoveEvent feedback to the client
 (an invalid selection currently just fails silently - see
-client_net/remote_controller.py), reconnection handling, matchmaking/a
-"Play" button, and any room UI beyond Create/Join/Cancel.
+client_net/remote_controller.py), and any room UI beyond
+Create/Join/Play/Cancel.
 """
 
 import asyncio
@@ -33,6 +34,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import messagebox
 
 import cv2
 import numpy as np
@@ -107,6 +109,9 @@ class _NetworkThread:
 
     def send_room_join(self, room_name):
         asyncio.run_coroutine_threadsafe(self._network_client.send_room_join(room_name), self._loop)
+
+    def send_room_play(self):
+        asyncio.run_coroutine_threadsafe(self._network_client.send_room_play(), self._loop)
 
     def send_click(self, x, y):
         asyncio.run_coroutine_threadsafe(self._network_client.send_click(x, y), self._loop)
@@ -268,8 +273,8 @@ def _prompt_room_choice():
     destroys its own window before returning, since cv2's window comes
     later and the two GUI toolkits shouldn't coexist.
 
-    Returns ("create", None), ("join", "<typed room name>"), or
-    ("cancel", None)."""
+    Returns ("create", None), ("join", "<typed room name>"),
+    ("play", None), or ("cancel", None)."""
     result = {"choice": "cancel", "room_name": None}
 
     root = tk.Tk()
@@ -289,6 +294,7 @@ def _prompt_room_choice():
     button_frame.pack(padx=10, pady=(0, 10))
     tk.Button(button_frame, text="Create", command=lambda: _choose("create")).pack(side=tk.LEFT, padx=5)
     tk.Button(button_frame, text="Join", command=lambda: _choose("join")).pack(side=tk.LEFT, padx=5)
+    tk.Button(button_frame, text="Play", command=lambda: _choose("play")).pack(side=tk.LEFT, padx=5)
     tk.Button(button_frame, text="Cancel", command=lambda: _choose("cancel")).pack(side=tk.LEFT, padx=5)
 
     root.protocol("WM_DELETE_WINDOW", lambda: _choose("cancel"))  # closing the window = Cancel
@@ -298,6 +304,8 @@ def _prompt_room_choice():
         return "join", result["room_name"]
     if result["choice"] == "create":
         return "create", None
+    if result["choice"] == "play":
+        return "play", None
     return "cancel", None
 
 
@@ -305,13 +313,19 @@ def _wait_for_room_result(connection_state, timeout_seconds=1.0):
     """Mirrors _wait_for_login_rejection's polling-sleep-loop style -
     gives the server a brief window to answer our room command before any
     cv2 window opens. Returns True (meaning "stop, don't open a game
-    window") once connection_state.room_not_found is set; returns False
-    (meaning "proceed") once connection_state.room_id is set, or once the
-    timeout passes without either - same optimistic-on-timeout behavior
-    as _wait_for_login_rejection."""
+    window") once connection_state.room_not_found is set, or once a
+    rejected message arrives (connection_state.rejected_reason is not
+    None - e.g. "no_match_found" for a "Play" that never found an
+    opponent, see main()); returns False (meaning "proceed") once
+    connection_state.room_id is set, or once the timeout passes without
+    either - same optimistic-on-timeout behavior as
+    _wait_for_login_rejection. A much longer `timeout_seconds` is used for
+    "Play" (matchmaking can legitimately take up to Matchmaker's own
+    60-second wait) than for "Create"/"Join" (a single, near-instant round
+    trip)."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        if connection_state.room_not_found:
+        if connection_state.room_not_found or connection_state.rejected_reason is not None:
             return True
         if connection_state.room_id is not None:
             return False
@@ -504,12 +518,28 @@ def main(server_uri=None, config=settings):
                 network_thread.send_room_create()
             elif choice == "join":
                 network_thread.send_room_join(room_name)
+            elif choice == "play":
+                network_thread.send_room_play()
+                print("Looking for an opponent (up to 60s)...")
 
-            if choice != "cancel" and not _wait_for_room_result(connection_state):
-                _run_loop(
-                    network_thread, connection_state, frame_cache, score_state, move_log_state,
-                    disconnect_countdown_state, game_over_state, config,
-                )
+            if choice != "cancel":
+                # "Play" needs a much longer window than the near-instant
+                # "Create"/"Join" round trip, since matchmaking can
+                # legitimately take up to Matchmaker's own 60s wait (see
+                # server/matchmaker.py) before giving up.
+                wait_timeout = 65.0 if choice == "play" else 1.0
+                if not _wait_for_room_result(connection_state, timeout_seconds=wait_timeout):
+                    _run_loop(
+                        network_thread, connection_state, frame_cache, score_state, move_log_state,
+                        disconnect_countdown_state, game_over_state, config,
+                    )
+                elif choice == "play":
+                    # Only "Play" pops up a message here - a "Join" of an
+                    # unknown room already communicates its own failure via
+                    # the printed "Room not found" (see
+                    # _ConnectionState.on_room_not_found) and simply exits
+                    # the same way, with no game window ever opening.
+                    messagebox.showinfo("KungFu Chess", "Couldn't find an opponent - please try again later.")
     finally:
         network_thread.stop()
 

@@ -805,3 +805,78 @@ def test_disconnecting_without_reconnecting_still_resigns_after_the_grace_period
                 pass
 
     asyncio.run(scenario())
+
+
+def test_two_close_ratings_playing_get_matched_into_the_same_room(tmp_path):
+    # Real end-to-end proof of quick-match: two brand-new accounts (both
+    # starting at the default 1200 rating - well within Matchmaker's
+    # +/-100 range) each send {"type":"room","action":"play"} and end up
+    # in the SAME room_joined room_id, one "w" and the other "b", exactly
+    # as if one had "created" and the other "joined" it.
+    async def scenario():
+        server_task = asyncio.create_task(
+            run_server(host=TEST_HOST, port=TEST_PORT + 20, user_db_path=str(tmp_path / "users.db")),
+        )
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+
+        async def _play(username):
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 20}") as connection:
+                await _login(connection, username, "hunter2")
+                await _next_message_of_type(connection, "login_success")
+                await connection.send(json.dumps({"type": "room", "action": "play"}))
+                room_payload = await _next_message_of_type(connection, "room_joined")
+                assigned_payload = await _next_message_of_type(connection, "assigned_color")
+                return room_payload["room_id"], assigned_payload["color"]
+
+        try:
+            (alice_room, alice_color), (bob_room, bob_color) = await asyncio.gather(
+                _play("alice"), _play("bob"),
+            )
+
+            assert alice_room == bob_room
+            # Which of the two concurrent matchmaking calls ends up "w" vs
+            # "b" is a race (whoever's assign_color runs first) - what
+            # matters is that between them, both colors are taken exactly
+            # once, same as any other 2-player room.
+            assert {alice_color, bob_color} == {"w", "b"}
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_a_lone_play_request_is_rejected_after_the_matchmaking_timeout(tmp_path):
+    # No opponent ever arrives - Matchmaker's own wait (shortened here for
+    # the test) elapses, and the connection gets rejected with
+    # "no_match_found" and closed, never a room/color at all.
+    async def scenario():
+        server_task = asyncio.create_task(run_server(
+            host=TEST_HOST, port=TEST_PORT + 21, user_db_path=str(tmp_path / "users.db"),
+            matchmaking_wait_seconds=0.3,
+        ))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 21}") as connection:
+                await _login(connection, "alice", "hunter2")
+                await _next_message_of_type(connection, "login_success")
+
+                await connection.send(json.dumps({"type": "room", "action": "play"}))
+                rejected_payload = await _next_message_of_type(connection, "rejected", timeout=2)
+                assert rejected_payload["reason"] == "no_match_found"
+
+                # The server closes a no_match_found connection outright -
+                # it must never receive a room_joined/assigned_color.
+                with pytest.raises(Exception):
+                    await asyncio.wait_for(connection.recv(), timeout=2)
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
