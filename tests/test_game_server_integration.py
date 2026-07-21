@@ -168,7 +168,7 @@ def test_client_receives_a_move_made_broadcast_distinct_from_frame_update(tmp_pa
     asyncio.run(scenario())
 
 
-def test_first_two_connections_get_white_and_black_third_gets_rejected(tmp_path):
+def test_first_two_connections_get_white_and_black_third_becomes_a_viewer(tmp_path):
     async def scenario():
         server_task = asyncio.create_task(
             run_server(host=TEST_HOST, port=TEST_PORT + 3, user_db_path=str(tmp_path / "users.db")),
@@ -187,13 +187,14 @@ def test_first_two_connections_get_white_and_black_third_gets_rejected(tmp_path)
 
                     async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as third:
                         await _login_and_join_room(third, room_id, "carol")
-                        third_payload = await _next_message_of_type(third, "rejected")
-                        assert third_payload["reason"] == "game_full"
 
-                        # The server closes a rejected connection outright -
-                        # nothing further should ever arrive on it.
-                        with pytest.raises(Exception):
-                            await asyncio.wait_for(third.recv(), timeout=2)
+                        # A 3rd+ connection becomes a viewer instead of
+                        # being rejected - see
+                        # test_a_third_connection_becomes_a_viewer_instead_of_being_rejected
+                        # for the fuller proof (still registered, inert
+                        # clicks, doesn't affect the real players' game).
+                        third_payload = await _next_message_of_type(third, "viewer_assigned")
+                        assert third_payload == {"type": "viewer_assigned"}
         finally:
             server_task.cancel()
             try:
@@ -635,6 +636,66 @@ def test_a_lone_first_player_cannot_move_until_a_second_player_joins(tmp_path):
                     assert move_payload["piece"] == "wP"
                     assert move_payload["start"] == [6, 0]
                     assert move_payload["end"] == [4, 0]
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_a_third_connection_becomes_a_viewer_instead_of_being_rejected(tmp_path):
+    # Real end-to-end proof: a 3rd connection to an already-full room gets
+    # viewer_assigned (not rejected/game_full), is still registered with
+    # ConnectionManager (proven by it receiving a real tick-loop
+    # frame_update), and any click/jump it sends never affects the board -
+    # the two real players' game continues completely unaffected.
+    async def scenario():
+        server_task = asyncio.create_task(
+            run_server(host=TEST_HOST, port=TEST_PORT + 17, user_db_path=str(tmp_path / "users.db")),
+        )
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 17}") as first:
+                room_id = await _login_and_create_room(first, "alice")
+                first_assigned = await _next_message_of_type(first, "assigned_color")
+                assert first_assigned["color"] == "w"
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 17}") as second:
+                    await _login_and_join_room(second, room_id, "bob")
+                    second_assigned = await _next_message_of_type(second, "assigned_color")
+                    assert second_assigned["color"] == "b"
+
+                    async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 17}") as third:
+                        await _login(third, "carol")
+                        await _next_message_of_type(third, "login_success")
+                        await _join_room(third, room_id)
+
+                        viewer_payload = await _next_message_of_type(third, "viewer_assigned")
+                        assert viewer_payload == {"type": "viewer_assigned"}
+
+                        # Still registered - proven by a real tick-loop
+                        # broadcast actually reaching it.
+                        third_frame = await _next_message_of_type(third, "frame_update")
+                        assert third_frame["cells"][6][0] == "wP"
+
+                        # A click/jump from the viewer must never affect
+                        # the board - white pawn at row 6, col 0 -> pixel
+                        # (0, 600).
+                        await third.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                        await third.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                        await third.send(json.dumps({"type": "jump", "x": 0, "y": 600}))
+
+                        # The two real players' game is unaffected: white
+                        # can still make its own real move normally.
+                        await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                        await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                        move_payload = await _next_message_of_type(first, "move_made")
+                        assert move_payload["color"] == "w"
+                        assert move_payload["start"] == [6, 0]
+                        assert move_payload["end"] == [4, 0]
         finally:
             server_task.cancel()
             try:

@@ -31,8 +31,12 @@ GameEndedEvent on that room's own bus - reusing that room's
 EventBroadcastHandler/RatingUpdateHandler rather than a separate resign
 path. There is no reconnection support yet.
 
-No room listing, no room deletion/cleanup, no spectator/viewer support -
-later steps.
+A 3rd+ connection to an already-full room becomes a viewer instead of
+being turned away: it's registered with an inert ViewerController (see
+server/viewer_controller.py) so it still receives tick-loop frame_update
+broadcasts, but its click/jump commands never do anything - no
+promotion-to-player if a real player later disconnects, and no room
+listing/deletion - later steps.
 """
 
 from __future__ import annotations
@@ -49,16 +53,31 @@ from server.player_scoped_controller import PlayerScopedController
 from server.protocol import (
     ClickCommand, JumpCommand, LoginCommand, RoomCommand, parse_command, serialize_assigned_color,
     serialize_login_rejected, serialize_login_success, serialize_rejected, serialize_room_created,
-    serialize_room_joined, serialize_room_not_found,
+    serialize_room_joined, serialize_room_not_found, serialize_viewer_assigned,
 )
 from server.room_registry import RoomRegistry
 from server.user_registry import UserRegistry
 from server.user_store import AuthOutcome, UserStore
+from server.viewer_controller import ViewerController
 
 logger = logging.getLogger(__name__)
 
 HOST = "localhost"
 PORT = 8765
+
+
+async def _forward_commands(messages, controller):
+    """Reads click/jump commands off `messages` until the connection
+    closes, forwarding each to `controller` - shared by both the real-
+    player and viewer paths below, which differ only in what `controller`
+    is and what happens on disconnect (see their respective `finally`
+    blocks), not in how commands get forwarded."""
+    async for message in messages:
+        command = parse_command(message)
+        if isinstance(command, ClickCommand):
+            controller.click(command.x, command.y)
+        elif isinstance(command, JumpCommand):
+            controller.jump(command.x, command.y)
 
 
 async def _handle_connection(connection, room_registry, user_registry, user_store):
@@ -120,10 +139,25 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
 
         color = session_manager.assign_color(connection)
         if color is None:
-            # TODO: viewers. Reject cleanly instead of letting a 3rd+
-            # connection spectate - that's a later task.
-            await connection.send(json.dumps(serialize_rejected("game_full")))
-            await connection.close()
+            # The room already has both "w" and "b" - this connection
+            # becomes a viewer instead of being turned away: an inert
+            # ViewerController (server/viewer_controller.py), registered
+            # just like a real player's so it still receives tick-loop
+            # frame_update broadcasts, but whose click/jump never do
+            # anything. Deliberately NOT gated by
+            # session_manager.is_game_started - that's a
+            # PlayerScopedController-only concept; a viewer is always
+            # inert, unconditionally.
+            await connection.send(json.dumps(serialize_viewer_assigned()))
+            controller = ViewerController()
+            connection_manager.register(connection, controller)
+            try:
+                await _forward_commands(messages, controller)
+            finally:
+                # No color slot was ever assigned, so nothing to release,
+                # and a viewer leaving never resigns anyone - no
+                # disconnect-resign countdown either.
+                connection_manager.unregister(connection)
             return
 
         await connection.send(json.dumps(serialize_assigned_color(color)))
@@ -133,12 +167,7 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
         )
         connection_manager.register(connection, controller)
         try:
-            async for message in messages:
-                command = parse_command(message)
-                if isinstance(command, ClickCommand):
-                    controller.click(command.x, command.y)
-                elif isinstance(command, JumpCommand):
-                    controller.jump(command.x, command.y)
+            await _forward_commands(messages, controller)
         finally:
             # Slot/registration are freed immediately, exactly as before -
             # only the game-end decision is delayed, via a background

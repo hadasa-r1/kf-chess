@@ -21,10 +21,12 @@ color/seconds_remaining (see server/disconnect_resign_handler.py) is
 handed to on_disconnect_countdown; a room_created/room_joined's room_id
 is handed to on_room_created/on_room_joined, and a room_not_found calls
 on_room_not_found() with no arguments (see server/room_registry.py,
-server/game_session.py for what creates/finds a room). No rendering, no
-cv2, nothing UI-specific - and kept in its own package (never imports
-from server/), since a client process must not depend on the server's
-internals. Never logs a raw password - only ever sends it onward.
+server/game_session.py for what creates/finds a room); a viewer_assigned
+calls on_viewer_assigned() with no arguments (see
+server/viewer_controller.py). No rendering, no cv2, nothing UI-specific -
+and kept in its own package (never imports from server/), since a client
+process must not depend on the server's internals. Never logs a raw
+password - only ever sends it onward.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ class NetworkClient:
     def __init__(self, connection, on_frame_update, on_remote_event=None,
                  on_assigned_color=None, on_rejected=None, on_login_rejected=None, on_login_success=None,
                  on_disconnect_countdown=None, on_room_created=None, on_room_joined=None,
-                 on_room_not_found=None):
+                 on_room_not_found=None, on_viewer_assigned=None):
         self._connection = connection
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -66,6 +68,7 @@ class NetworkClient:
         self._on_room_created = on_room_created
         self._on_room_joined = on_room_joined
         self._on_room_not_found = on_room_not_found
+        self._on_viewer_assigned = on_viewer_assigned
 
     async def send_login(self, username, password):
         await self._connection.send(json.dumps({"type": "login", "username": username, "password": password}))
@@ -143,5 +146,8 @@ class NetworkClient:
             elif message_type == "room_not_found":
                 if self._on_room_not_found is not None:
                     self._on_room_not_found()
+            elif message_type == "viewer_assigned":
+                if self._on_viewer_assigned is not None:
+                    self._on_viewer_assigned()
             else:
                 logger.warning("Dropping message with unrecognized type %r", message_type)

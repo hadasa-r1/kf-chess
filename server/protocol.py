@@ -248,3 +248,11 @@ def serialize_room_not_found(room_name):
     connection - mirrors serialize_login_rejected/serialize_rejected's
     reject-then-close pattern."""
     return {"type": "room_not_found", "room_name": room_name}
+
+
+def serialize_viewer_assigned():
+    """Sent to a 3rd+ connection in an already-full room instead of
+    serialize_rejected("game_full") - it becomes a viewer (see
+    server/viewer_controller.py) rather than being turned away. No color:
+    a viewer has none."""
+    return {"type": "viewer_assigned"}

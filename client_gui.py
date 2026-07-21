@@ -73,7 +73,7 @@ class _NetworkThread:
 
     def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected,
                  on_login_rejected, on_login_success, on_disconnect_countdown, on_room_created,
-                 on_room_joined, on_room_not_found):
+                 on_room_joined, on_room_not_found, on_viewer_assigned):
         self._uri = uri
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -85,6 +85,7 @@ class _NetworkThread:
         self._on_room_created = on_room_created
         self._on_room_joined = on_room_joined
         self._on_room_not_found = on_room_not_found
+        self._on_viewer_assigned = on_viewer_assigned
         self._loop = None
         self._connection = None
         self._network_client = None
@@ -132,6 +133,7 @@ class _NetworkThread:
                 on_login_rejected=self._on_login_rejected, on_login_success=self._on_login_success,
                 on_disconnect_countdown=self._on_disconnect_countdown, on_room_created=self._on_room_created,
                 on_room_joined=self._on_room_joined, on_room_not_found=self._on_room_not_found,
+                on_viewer_assigned=self._on_viewer_assigned,
             )
             self._ready.set()
             await self._network_client.run()
@@ -155,6 +157,7 @@ class _ConnectionState:
         self.is_new_account = None
         self.room_id = None
         self.room_not_found = False
+        self.is_viewer = False
 
     def on_assigned_color(self, color):
         print(f"Assigned color: {color}")
@@ -189,6 +192,10 @@ class _ConnectionState:
     def on_room_not_found(self):
         print("Room not found")
         self.room_not_found = True
+
+    def on_viewer_assigned(self):
+        print("Joined as a viewer - the room is already full")
+        self.is_viewer = True
 
 
 def _connecting_frame(width=400, height=200):
@@ -308,15 +315,19 @@ def _wait_for_room_result(connection_state, timeout_seconds=1.0):
     return False
 
 
-def _on_mouse(controller, disconnect_countdown_state, board_offset_x, event, x, y, flags, param):
+def _on_mouse(controller, disconnect_countdown_state, connection_state, board_offset_x, event, x, y, flags, param):
     # Mirrors main_gui.py's _on_mouse, except a click/jump is dropped
     # entirely while the opponent's disconnect grace period is counting
     # down (see DisconnectCountdownState) - there's nothing useful to do
     # with input mid-countdown, and no reconnection concept to resume
-    # into. The displayed frame is [white panel | board | black panel],
-    # so raw window pixels need the left panel's width subtracted before
+    # into - or if this connection is a viewer (see
+    # server/viewer_controller.py), which can never act at all. The
+    # server's own ViewerController is already a no-op belt-and-suspenders
+    # backstop for this; skipping the send here is just the other half.
+    # The displayed frame is [white panel | board | black panel], so raw
+    # window pixels need the left panel's width subtracted before
     # BoardMapper can turn them into board cells.
-    if disconnect_countdown_state.latest() is not None:
+    if disconnect_countdown_state.latest() is not None or connection_state.is_viewer:
         return
     board_x = x - board_offset_x
     if event == cv2.EVENT_LBUTTONDOWN:
@@ -370,9 +381,15 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
     controller = RemoteController(network_thread, board_mapper)
     renderer = _build_renderer(first_snapshot.width, first_snapshot.height, config)
 
-    if connection_state.assigned_color is not None:
+    if connection_state.is_viewer:
+        title = f"{WINDOW_NAME} - Viewer"
+    elif connection_state.assigned_color is not None:
         color_label = "White" if connection_state.assigned_color == "w" else "Black"
         title = f"{WINDOW_NAME} - You are {color_label}"
+    else:
+        title = None
+
+    if title is not None:
         # Extending the same title string (rather than a separate on-canvas
         # overlay) is the simpler option here - the room_id is static for
         # the whole session, exactly like the color label already is, so
@@ -387,7 +404,8 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
     cv2.setMouseCallback(
         WINDOW_NAME,
         lambda event, x, y, flags, param: _on_mouse(
-            controller, disconnect_countdown_state, ui_config.SIDE_PANEL_WIDTH, event, x, y, flags, param,
+            controller, disconnect_countdown_state, connection_state, ui_config.SIDE_PANEL_WIDTH,
+            event, x, y, flags, param,
         ),
     )
 
@@ -469,6 +487,7 @@ def main(server_uri=None, config=settings):
         on_disconnect_countdown=disconnect_countdown_state.update,
         on_room_created=connection_state.on_room_created, on_room_joined=connection_state.on_room_joined,
         on_room_not_found=connection_state.on_room_not_found,
+        on_viewer_assigned=connection_state.on_viewer_assigned,
     )
     network_thread.start()
     network_thread.send_login(username, password)

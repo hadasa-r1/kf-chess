@@ -33,13 +33,14 @@ class _RecordingConnection:
 
 def _run_client(messages, on_frame_update, on_remote_event=None, on_login_rejected=None, on_login_success=None,
                  on_disconnect_countdown=None, on_room_created=None, on_room_joined=None,
-                 on_room_not_found=None):
+                 on_room_not_found=None, on_viewer_assigned=None):
     connection = _FakeConnection(messages)
     client = NetworkClient(
         connection, on_frame_update=on_frame_update, on_remote_event=on_remote_event,
         on_login_rejected=on_login_rejected, on_login_success=on_login_success,
         on_disconnect_countdown=on_disconnect_countdown, on_room_created=on_room_created,
         on_room_joined=on_room_joined, on_room_not_found=on_room_not_found,
+        on_viewer_assigned=on_viewer_assigned,
     )
     asyncio.run(client.run())
 
@@ -295,3 +296,23 @@ def test_send_room_join_sends_the_expected_wire_message():
     asyncio.run(client.send_room_join("abcd1234"))
 
     assert connection.sent == [json.dumps({"type": "room", "action": "join", "room_name": "abcd1234"})]
+
+
+def test_viewer_assigned_message_is_routed_to_on_viewer_assigned_with_no_arguments():
+    frame_updates = []
+    calls = []
+    message = json.dumps({"type": "viewer_assigned"})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_viewer_assigned=lambda: calls.append(None))
+
+    assert frame_updates == []
+    assert calls == [None]
+
+
+def test_viewer_assigned_without_a_callback_is_silently_ignored():
+    frame_updates = []
+    message = json.dumps({"type": "viewer_assigned"})
+
+    _run_client([message], on_frame_update=frame_updates.append)  # no on_viewer_assigned - must not raise
+
+    assert frame_updates == []

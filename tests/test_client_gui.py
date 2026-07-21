@@ -49,3 +49,17 @@ def test_on_room_not_found_sets_the_flag():
     state.on_room_not_found()
 
     assert state.room_not_found is True
+
+
+def test_is_viewer_defaults_to_false():
+    state = _ConnectionState()
+
+    assert state.is_viewer is False
+
+
+def test_on_viewer_assigned_sets_the_flag():
+    state = _ConnectionState()
+
+    state.on_viewer_assigned()
+
+    assert state.is_viewer is True
