@@ -32,12 +32,14 @@ class _RecordingConnection:
 
 
 def _run_client(messages, on_frame_update, on_remote_event=None, on_login_rejected=None, on_login_success=None,
-                 on_disconnect_countdown=None):
+                 on_disconnect_countdown=None, on_room_created=None, on_room_joined=None,
+                 on_room_not_found=None):
     connection = _FakeConnection(messages)
     client = NetworkClient(
         connection, on_frame_update=on_frame_update, on_remote_event=on_remote_event,
         on_login_rejected=on_login_rejected, on_login_success=on_login_success,
-        on_disconnect_countdown=on_disconnect_countdown,
+        on_disconnect_countdown=on_disconnect_countdown, on_room_created=on_room_created,
+        on_room_joined=on_room_joined, on_room_not_found=on_room_not_found,
     )
     asyncio.run(client.run())
 
@@ -215,3 +217,81 @@ def test_disconnect_countdown_without_a_callback_is_silently_ignored():
     _run_client([message], on_frame_update=frame_updates.append)  # no on_disconnect_countdown - must not raise
 
     assert frame_updates == []
+
+
+def test_room_created_message_is_routed_to_on_room_created():
+    frame_updates = []
+    room_ids = []
+    message = json.dumps({"type": "room_created", "room_id": "abcd1234"})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_room_created=room_ids.append)
+
+    assert frame_updates == []
+    assert room_ids == ["abcd1234"]
+
+
+def test_room_created_without_a_callback_is_silently_ignored():
+    frame_updates = []
+    message = json.dumps({"type": "room_created", "room_id": "abcd1234"})
+
+    _run_client([message], on_frame_update=frame_updates.append)  # no on_room_created - must not raise
+
+    assert frame_updates == []
+
+
+def test_room_joined_message_is_routed_to_on_room_joined():
+    frame_updates = []
+    room_ids = []
+    message = json.dumps({"type": "room_joined", "room_id": "abcd1234"})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_room_joined=room_ids.append)
+
+    assert frame_updates == []
+    assert room_ids == ["abcd1234"]
+
+
+def test_room_joined_without_a_callback_is_silently_ignored():
+    frame_updates = []
+    message = json.dumps({"type": "room_joined", "room_id": "abcd1234"})
+
+    _run_client([message], on_frame_update=frame_updates.append)  # no on_room_joined - must not raise
+
+    assert frame_updates == []
+
+
+def test_room_not_found_message_is_routed_to_on_room_not_found_with_no_arguments():
+    frame_updates = []
+    calls = []
+    message = json.dumps({"type": "room_not_found", "room_name": "no-such-room"})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_room_not_found=lambda: calls.append(None))
+
+    assert frame_updates == []
+    assert calls == [None]
+
+
+def test_room_not_found_without_a_callback_is_silently_ignored():
+    frame_updates = []
+    message = json.dumps({"type": "room_not_found", "room_name": "no-such-room"})
+
+    _run_client([message], on_frame_update=frame_updates.append)  # no on_room_not_found - must not raise
+
+    assert frame_updates == []
+
+
+def test_send_room_create_sends_the_expected_wire_message():
+    connection = _RecordingConnection()
+    client = NetworkClient(connection, on_frame_update=lambda frame: None)
+
+    asyncio.run(client.send_room_create())
+
+    assert connection.sent == [json.dumps({"type": "room", "action": "create"})]
+
+
+def test_send_room_join_sends_the_expected_wire_message():
+    connection = _RecordingConnection()
+    client = NetworkClient(connection, on_frame_update=lambda frame: None)
+
+    asyncio.run(client.send_room_join("abcd1234"))
+
+    assert connection.sent == [json.dumps({"type": "room", "action": "join", "room_name": "abcd1234"})]

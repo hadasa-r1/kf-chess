@@ -1,48 +1,38 @@
 """Composition root for the KungFu Chess server process.
 
-Builds one shared GameEngine (via main._build_game, reused as-is - the
-project's single place that constructs the registry/board/arbiter/engine
-graph), gives each connected client its own Controller against that
-shared engine and a shared, stateless BoardMapper, and runs two
-concurrent pieces:
-
-- a tick loop that keeps the engine's real-time clock advancing and
-  broadcasts a snapshot to every connected client, regardless of whether
-  any client has sent a command recently (cooldowns/motion are
-  time-based, not turn-based);
-- the websockets per-connection handler that turns incoming click/jump
-  commands into calls on that connection's own Controller.
-
-Also constructs an EventBroadcastHandler on the engine's bus, so
-ScoreChangedEvent/MoveMadeEvent reach connected clients as small JSON
-messages too (see server/event_broadcast_handler.py) - a separate channel
-from the tick loop's frame_update broadcasts.
+Each room is an independent GameSession (server/game_session.py): its own
+engine/board/board_mapper/bus, its own ConnectionManager/SessionManager/
+EventBroadcastHandler/RatingUpdateHandler/DisconnectResignHandler, and its
+own tick loop - a move in one room never affects another. RoomRegistry
+(server/room_registry.py) creates/looks up sessions by a short room_id.
 
 Every connection must log in with a username+password as its very first
 message before anything else happens: a UserStore (server/user_store.py)
 persists accounts (salted/hashed passwords, an ELO rating starting at
-1200) in a small SQLite file, independent of any connection/EventBus
+1200) in a small SQLite file, independent of any connection/EventBus/room
 knowledge; a UserRegistry then caches connection->username for the
-lifetime of that connection (in-memory only). A RatingUpdateHandler
-(server/rating_update_handler.py) separately reacts to GameEndedEvent to
-update both players' persisted ratings via server/elo.py's pure ELO math.
-A SessionManager assigns the 1st logged-in connection "w" and the 2nd "b"
-(a 3rd+ is rejected outright - see session_manager.py's `# TODO: viewers`);
-each connection's real Controller is wrapped in a PlayerScopedController
-that enforces "you may only select your own color's pieces" on top of
-it, without game/controller.py itself knowing anything about color
-restriction (local hotseat play needs none).
+lifetime of that connection (in-memory only). Both are global, shared
+across every room - accounts and ratings don't belong to any one room.
+
+Once logged in, a connection's NEXT message must be a room command -
+either {"type": "room", "action": "create"} (starts a brand new
+GameSession) or {"type": "room", "action": "join", "room_name": <id>}
+(joins an existing one, or gets room_not_found + closed if that id
+doesn't exist). Only once a GameSession is resolved does the existing
+color-assignment/Controller-wrapping flow proceed, entirely against that
+session's own SessionManager/ConnectionManager/engine/board/board_mapper.
 
 A mid-game disconnect doesn't resign the player immediately: their color
-slot/Controller registration are freed right away (same as always), but
-_handle_connection then kicks off a DisconnectResignHandler
-(server/disconnect_resign_handler.py) as a background task, giving them a
-20-second grace period (broadcast to whoever's left as a countdown)
-before publishing a real GameEndedEvent - reusing EventBroadcastHandler/
-RatingUpdateHandler's existing GameEndedEvent subscriptions rather than a
-separate resign path. There is no reconnection support yet.
+slot/Controller registration (within their room's own SessionManager/
+ConnectionManager) are freed right away, but _handle_connection then
+kicks off that room's DisconnectResignHandler as a background task,
+giving them a 20-second grace period before publishing a real
+GameEndedEvent on that room's own bus - reusing that room's
+EventBroadcastHandler/RatingUpdateHandler rather than a separate resign
+path. There is no reconnection support yet.
 
-No rooms, no matchmaking - later steps.
+No room listing, no room deletion/cleanup, no spectator/viewer support -
+later steps.
 """
 
 from __future__ import annotations
@@ -50,93 +40,32 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 
 from websockets.asyncio.server import serve
 
 from config import settings
-from game.board_mapper import BoardMapper
 from game.controller import Controller
-from main import _build_game
-from server.connection_manager import ConnectionManager
-from server.disconnect_resign_handler import COUNTDOWN_SECONDS, DisconnectResignHandler
-from server.event_broadcast_handler import EventBroadcastHandler
 from server.player_scoped_controller import PlayerScopedController
 from server.protocol import (
-    ClickCommand, JumpCommand, LoginCommand, parse_command, serialize_assigned_color,
-    serialize_frame_update, serialize_login_rejected, serialize_login_success, serialize_rejected,
+    ClickCommand, JumpCommand, LoginCommand, RoomCommand, parse_command, serialize_assigned_color,
+    serialize_login_rejected, serialize_login_success, serialize_rejected, serialize_room_created,
+    serialize_room_joined, serialize_room_not_found,
 )
-from server.rating_update_handler import RatingUpdateHandler
-from server.session_manager import SessionManager
+from server.room_registry import RoomRegistry
 from server.user_registry import UserRegistry
 from server.user_store import AuthOutcome, UserStore
-from view.snapshot import cooldowns_from_engine
-# BOARD_FILE is a plain path constant with no cv2/UI machinery behind it
-# (UI/ui_config.py has no imports at all) - reused here rather than
-# duplicating the same literal path in a second place.
-from UI.ui_config import BOARD_FILE
 
 logger = logging.getLogger(__name__)
 
 HOST = "localhost"
 PORT = 8765
-TICK_INTERVAL_SECONDS = 0.05
 
 
-def _load_board_lines():
-    with open(BOARD_FILE) as f:
-        return [line.rstrip("\n") for line in f]
-
-
-async def _tick_loop(engine, connection_manager):
-    """Advances the engine's clock and broadcasts a frame_update roughly
-    every TICK_INTERVAL_SECONDS, using the actual elapsed wall time (not a
-    fixed constant) so event-loop jitter never desyncs the game clock.
-
-    The broadcast payload carries everything a remote client needs to
-    rebuild a full FrameState (moves/jumps/clock/cooldowns) - not just a
-    bare snapshot - so networked clients can render in-flight motion and
-    cooldown overlays exactly like local play. History/score are excluded
-    on purpose (see server.protocol.serialize_frame_update)."""
-    last_tick = time.monotonic()
-    while True:
-        await asyncio.sleep(TICK_INTERVAL_SECONDS)
-        now = time.monotonic()
-        elapsed_ms = int((now - last_tick) * 1000)
-        last_tick = now
-
-        engine.wait(elapsed_ms)
-        # `selected=None` here is a placeholder - the per-connection loop
-        # below overwrites "selected" with each client's own
-        # Controller.selected before sending, since the server has no
-        # single shared "selected" concept.
-        snapshot = engine.snapshot(selected=None)
-        cooldowns, cooldown_remaining = cooldowns_from_engine(engine, snapshot)
-        base_payload = serialize_frame_update(
-            snapshot=snapshot,
-            moves=engine.active_moves(),
-            jumps=engine.active_jumps(),
-            clock=engine.clock,
-            cooldowns=cooldowns,
-            cooldown_remaining=cooldown_remaining,
-        )
-        for connection in connection_manager.connections():
-            controller = connection_manager.controller_for(connection)
-            if controller is None:
-                continue  # disconnected between building the list and this lookup
-            personalized_payload = dict(base_payload)
-            personalized_payload["selected"] = (
-                list(controller.selected) if controller.selected is not None else None
-            )
-            await connection_manager.send(connection, personalized_payload)
-
-
-async def _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager,
-                              user_registry, user_store, disconnect_resign_handler):
+async def _handle_connection(connection, room_registry, user_registry, user_store):
     # A connection's very first message must be a login - checked here,
-    # before color assignment or any click/jump handling, by pulling one
-    # message off the same async iterator the rest of the handler uses
-    # below (so nothing sent after login is skipped or double-read).
+    # before anything else, by pulling one message off the same async
+    # iterator the rest of the handler uses below (so nothing sent after
+    # login is skipped or double-read).
     messages = connection.__aiter__()
     try:
         first_message = await messages.__anext__()
@@ -157,21 +86,50 @@ async def _handle_connection(connection, engine, board, board_mapper, connection
         return
 
     user_registry.login(connection, username)
-    await connection.send(json.dumps(serialize_login_success(
-        rating=auth_result.rating, is_new_account=auth_result.outcome is AuthOutcome.NEW_ACCOUNT_CREATED,
-    )))
     try:
+        await connection.send(json.dumps(serialize_login_success(
+            rating=auth_result.rating, is_new_account=auth_result.outcome is AuthOutcome.NEW_ACCOUNT_CREATED,
+        )))
+
+        # The next message must be a room command - same one-message-off-
+        # the-iterator pattern as the login step above.
+        try:
+            room_message = await messages.__anext__()
+        except StopAsyncIteration:
+            return
+
+        room_command = parse_command(room_message)
+        session = None
+        if isinstance(room_command, RoomCommand) and room_command.action == "create":
+            session = room_registry.create_room()
+            await connection.send(json.dumps(serialize_room_created(session.room_id)))
+        elif isinstance(room_command, RoomCommand) and room_command.action == "join" and room_command.room_name:
+            session = room_registry.get_room(room_command.room_name)
+            if session is None:
+                await connection.send(json.dumps(serialize_room_not_found(room_command.room_name)))
+                await connection.close()
+                return
+            await connection.send(json.dumps(serialize_room_joined(session.room_id)))
+        else:
+            await connection.send(json.dumps(serialize_rejected("invalid_room_command")))
+            await connection.close()
+            return
+
+        session_manager = session.session_manager
+        connection_manager = session.connection_manager
+
         color = session_manager.assign_color(connection)
         if color is None:
             # TODO: viewers. Reject cleanly instead of letting a 3rd+
-            # connection spectate - that's a later task (the "Rooms" slide).
+            # connection spectate - that's a later task.
             await connection.send(json.dumps(serialize_rejected("game_full")))
             await connection.close()
             return
 
         await connection.send(json.dumps(serialize_assigned_color(color)))
         controller = PlayerScopedController(
-            Controller(engine=engine, board_mapper=board_mapper), color, board, board_mapper,
+            Controller(engine=session.engine, board_mapper=session.board_mapper),
+            color, session.board, session.board_mapper,
         )
         connection_manager.register(connection, controller)
         try:
@@ -185,11 +143,11 @@ async def _handle_connection(connection, engine, board, board_mapper, connection
             # Slot/registration are freed immediately, exactly as before -
             # only the game-end decision is delayed, via a background
             # task started *after* unregistering, so its broadcast
-            # naturally reaches only whoever's still connected (see
-            # server/disconnect_resign_handler.py).
+            # naturally reaches only whoever's still connected in this
+            # room (see server/disconnect_resign_handler.py).
             connection_manager.unregister(connection)
             session_manager.release(connection)
-            asyncio.create_task(disconnect_resign_handler.start_countdown(color))
+            asyncio.create_task(session.disconnect_resign_handler.start_countdown(color))
     finally:
         user_registry.logout(connection)
 
@@ -199,35 +157,19 @@ async def run_server(host=HOST, port=PORT, user_db_path=None, disconnect_countdo
     # than always settings.USER_DB_PATH / the 20s default) so tests can use
     # a throwaway file and a short countdown instead of ever touching the
     # real database or waiting 20 real seconds - see
-    # tests/test_game_server_integration.py.
-    engine, _controller, board, bus = _build_game(_load_board_lines(), settings)
-    board_mapper = BoardMapper(board, settings.CELL_SIZE)
-    connection_manager = ConnectionManager()
-    session_manager = SessionManager()
+    # tests/test_game_server_integration.py. Both flow down into every
+    # GameSession a room command creates, via RoomRegistry.
     user_registry = UserRegistry()
     user_store = UserStore(user_db_path or settings.USER_DB_PATH)
-    event_broadcast_handler = EventBroadcastHandler(bus, connection_manager)
-    rating_update_handler = RatingUpdateHandler(bus, user_store, session_manager, user_registry)
-    disconnect_resign_handler = DisconnectResignHandler(
-        bus, connection_manager, engine, countdown_seconds=disconnect_countdown_seconds or COUNTDOWN_SECONDS,
+    room_registry = RoomRegistry(
+        user_store, user_registry, disconnect_countdown_seconds=disconnect_countdown_seconds,
     )
 
     async def handler(connection):
-        await _handle_connection(
-            connection, engine, board, board_mapper, connection_manager, session_manager,
-            user_registry, user_store, disconnect_resign_handler,
-        )
+        await _handle_connection(connection, room_registry, user_registry, user_store)
 
-    tick_task = asyncio.create_task(_tick_loop(engine, connection_manager))
-    try:
-        async with serve(handler, host, port):
-            await asyncio.Future()  # run until cancelled (Ctrl+C, or a test)
-    finally:
-        tick_task.cancel()
-        try:
-            await tick_task
-        except asyncio.CancelledError:
-            pass
+    async with serve(handler, host, port):
+        await asyncio.Future()  # run until cancelled (Ctrl+C, or a test)
 
 
 def main():

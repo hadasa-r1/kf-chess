@@ -33,6 +33,12 @@ class LoginCommand:
     password: str
 
 
+@dataclass(frozen=True)
+class RoomCommand:
+    action: str
+    room_name: str | None = None
+
+
 def parse_command(text):
     """Turn one incoming message into a ClickCommand/JumpCommand/
     LoginCommand, or None for anything malformed (invalid JSON,
@@ -61,6 +67,20 @@ def parse_command(text):
             logger.warning("Dropping malformed login command: %s", error)
             return None
         return LoginCommand(username=username, password=password)
+
+    if command_type == "room":
+        try:
+            action = str(payload["action"])
+        except (KeyError, TypeError) as error:
+            logger.warning("Dropping malformed command %r: %s", text, error)
+            return None
+        # "room_name" only matters for a "join" - not present at all for a
+        # "create", so (unlike username/password above) this is optional
+        # shape, not a parsing failure.
+        room_name = payload.get("room_name")
+        if room_name is not None:
+            room_name = str(room_name)
+        return RoomCommand(action=action, room_name=room_name)
 
     if command_type in ("click", "jump"):
         try:
@@ -206,3 +226,25 @@ def serialize_disconnect_countdown(color, seconds_remaining):
     player's color, not the recipient's, so a client can render "opponent
     reconnecting in Ns"."""
     return {"type": "disconnect_countdown", "color": color, "seconds_remaining": seconds_remaining}
+
+
+def serialize_room_created(room_id):
+    """Sent after a "room"/"create" command succeeds - `room_id` is what
+    a second player passes back as "room_name" in a "room"/"join" command
+    to reach the same GameSession (see server/room_registry.py,
+    server/game_session.py)."""
+    return {"type": "room_created", "room_id": room_id}
+
+
+def serialize_room_joined(room_id):
+    """Sent after a "room"/"join" command finds an existing GameSession -
+    echoes the room_id back for the client's own confirmation/display."""
+    return {"type": "room_joined", "room_id": room_id}
+
+
+def serialize_room_not_found(room_name):
+    """Sent when a "room"/"join" command names a room_id RoomRegistry has
+    no GameSession for, immediately before the server closes the
+    connection - mirrors serialize_login_rejected/serialize_rejected's
+    reject-then-close pattern."""
+    return {"type": "room_not_found", "room_name": room_name}

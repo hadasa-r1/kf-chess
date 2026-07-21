@@ -2,8 +2,9 @@ import json
 
 from realtime.models import Move, Jump
 from server.protocol import (
-    ClickCommand, JumpCommand, LoginCommand, parse_command, serialize_frame_update,
-    serialize_login_rejected, serialize_login_success, serialize_snapshot,
+    ClickCommand, JumpCommand, LoginCommand, RoomCommand, parse_command, serialize_frame_update,
+    serialize_login_rejected, serialize_login_success, serialize_room_created, serialize_room_joined,
+    serialize_room_not_found, serialize_snapshot,
 )
 from view.snapshot import GameSnapshot
 
@@ -81,6 +82,41 @@ def test_serialize_login_success_has_the_login_success_type_rating_and_new_accou
 
     assert payload == {"type": "login_success", "rating": 1200, "is_new_account": True}
     json.dumps(payload)  # every value must actually be JSON-serializable
+
+
+def test_parse_command_recognizes_a_room_create():
+    command = parse_command(json.dumps({"type": "room", "action": "create"}))
+    assert command == RoomCommand(action="create", room_name=None)
+
+
+def test_parse_command_recognizes_a_room_join():
+    command = parse_command(json.dumps({"type": "room", "action": "join", "room_name": "abcd1234"}))
+    assert command == RoomCommand(action="join", room_name="abcd1234")
+
+
+def test_parse_command_returns_none_for_room_missing_action():
+    assert parse_command(json.dumps({"type": "room", "room_name": "abcd1234"})) is None
+
+
+def test_serialize_room_created_has_the_room_created_type_and_room_id():
+    payload = serialize_room_created("abcd1234")
+
+    assert payload == {"type": "room_created", "room_id": "abcd1234"}
+    json.dumps(payload)
+
+
+def test_serialize_room_joined_has_the_room_joined_type_and_room_id():
+    payload = serialize_room_joined("abcd1234")
+
+    assert payload == {"type": "room_joined", "room_id": "abcd1234"}
+    json.dumps(payload)
+
+
+def test_serialize_room_not_found_has_the_room_not_found_type_and_room_name():
+    payload = serialize_room_not_found("no-such-room")
+
+    assert payload == {"type": "room_not_found", "room_name": "no-such-room"}
+    json.dumps(payload)
 
 
 def test_serialize_snapshot_converts_tuples_to_lists():

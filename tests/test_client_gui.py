@@ -3,6 +3,7 @@ from bus_handlers.animation_trigger_handler import AnimationTriggerHandler
 from bus_handlers.audio_sound_player import AudioSoundPlayer
 from bus_handlers.graphics_animation_trigger import GraphicsAnimationTrigger
 from bus_handlers.sound_handler import SoundHandler
+from client_gui import _ConnectionState
 
 
 def test_sound_and_animation_handlers_construct_on_a_real_local_bus():
@@ -17,3 +18,34 @@ def test_sound_and_animation_handlers_construct_on_a_real_local_bus():
 
     assert isinstance(sound_handler, SoundHandler)
     assert isinstance(animation_handler, AnimationTriggerHandler)
+
+
+def test_connection_state_room_fields_default_to_unset():
+    state = _ConnectionState()
+
+    assert state.room_id is None
+    assert state.room_not_found is False
+
+
+def test_on_room_created_sets_room_id():
+    state = _ConnectionState()
+
+    state.on_room_created("abcd1234")
+
+    assert state.room_id == "abcd1234"
+
+
+def test_on_room_joined_sets_room_id():
+    state = _ConnectionState()
+
+    state.on_room_joined("abcd1234")
+
+    assert state.room_id == "abcd1234"
+
+
+def test_on_room_not_found_sets_the_flag():
+    state = _ConnectionState()
+
+    state.on_room_not_found()
+
+    assert state.room_not_found is True

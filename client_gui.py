@@ -15,12 +15,16 @@ requirement - the password uses getpass.getpass so it isn't echoed) and
 sends them as the connection's very first outgoing message; the server
 gates every connection on this login (persisted account + ELO rating -
 see server/user_store.py) before color assignment (see
-server/game_server.py).
+server/game_server.py). Once logged in, a native tkinter dialog (a
+"windows message with text box and buttons", per the Rooms slide's own
+requirement - unlike login, which stays a shell prompt) asks the player
+to Create or Join a room (or Cancel) before any color assignment or cv2
+window.
 
 Out of scope, left as follow-ups: InvalidMoveEvent feedback to the client
 (an invalid selection currently just fails silently - see
 client_net/remote_controller.py), reconnection handling, matchmaking/a
-"Play" button, and any room UI.
+"Play" button, and any room UI beyond Create/Join/Cancel.
 """
 
 import asyncio
@@ -28,6 +32,7 @@ import getpass
 import sys
 import threading
 import time
+import tkinter as tk
 
 import cv2
 import numpy as np
@@ -67,7 +72,8 @@ class _NetworkThread:
     """
 
     def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected,
-                 on_login_rejected, on_login_success, on_disconnect_countdown):
+                 on_login_rejected, on_login_success, on_disconnect_countdown, on_room_created,
+                 on_room_joined, on_room_not_found):
         self._uri = uri
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -76,6 +82,9 @@ class _NetworkThread:
         self._on_login_rejected = on_login_rejected
         self._on_login_success = on_login_success
         self._on_disconnect_countdown = on_disconnect_countdown
+        self._on_room_created = on_room_created
+        self._on_room_joined = on_room_joined
+        self._on_room_not_found = on_room_not_found
         self._loop = None
         self._connection = None
         self._network_client = None
@@ -89,6 +98,12 @@ class _NetworkThread:
 
     def send_login(self, username, password):
         asyncio.run_coroutine_threadsafe(self._network_client.send_login(username, password), self._loop)
+
+    def send_room_create(self):
+        asyncio.run_coroutine_threadsafe(self._network_client.send_room_create(), self._loop)
+
+    def send_room_join(self, room_name):
+        asyncio.run_coroutine_threadsafe(self._network_client.send_room_join(room_name), self._loop)
 
     def send_click(self, x, y):
         asyncio.run_coroutine_threadsafe(self._network_client.send_click(x, y), self._loop)
@@ -115,7 +130,8 @@ class _NetworkThread:
                 connection, on_frame_update=self._on_frame_update, on_remote_event=self._on_remote_event,
                 on_assigned_color=self._on_assigned_color, on_rejected=self._on_rejected,
                 on_login_rejected=self._on_login_rejected, on_login_success=self._on_login_success,
-                on_disconnect_countdown=self._on_disconnect_countdown,
+                on_disconnect_countdown=self._on_disconnect_countdown, on_room_created=self._on_room_created,
+                on_room_joined=self._on_room_joined, on_room_not_found=self._on_room_not_found,
             )
             self._ready.set()
             await self._network_client.run()
@@ -137,6 +153,8 @@ class _ConnectionState:
         self.login_rejected_reason = None
         self.rating = None
         self.is_new_account = None
+        self.room_id = None
+        self.room_not_found = False
 
     def on_assigned_color(self, color):
         print(f"Assigned color: {color}")
@@ -159,6 +177,18 @@ class _ConnectionState:
             print(f"Logged in - current rating: {rating}")
         self.rating = rating
         self.is_new_account = is_new_account
+
+    def on_room_created(self, room_id):
+        print(f"Room created: {room_id}")
+        self.room_id = room_id
+
+    def on_room_joined(self, room_id):
+        print(f"Joined room: {room_id}")
+        self.room_id = room_id
+
+    def on_room_not_found(self):
+        print("Room not found")
+        self.room_not_found = True
 
 
 def _connecting_frame(width=400, height=200):
@@ -214,6 +244,66 @@ def _wait_for_login_rejection(connection_state, timeout_seconds=1.0):
     while time.time() < deadline:
         if connection_state.login_rejected_reason is not None:
             return True
+        time.sleep(0.05)
+    return False
+
+
+def _prompt_room_choice():
+    """A native dialog (tkinter, stdlib only) - the Rooms slide's own
+    explicit requirement is literally "a windows message with text box
+    and buttons", unlike the login step above which stays a shell prompt
+    per ITS slide's requirement. Blocks synchronously, exactly like
+    _prompt_username()/_prompt_password(), before anything else happens;
+    destroys its own window before returning, since cv2's window comes
+    later and the two GUI toolkits shouldn't coexist.
+
+    Returns ("create", None), ("join", "<typed room name>"), or
+    ("cancel", None)."""
+    result = {"choice": "cancel", "room_name": None}
+
+    root = tk.Tk()
+    root.title("KungFu Chess - Room")
+
+    tk.Label(root, text="Room name (only needed to Join):").pack(padx=10, pady=(10, 0))
+    entry = tk.Entry(root, width=30)
+    entry.pack(padx=10, pady=5)
+    entry.focus_set()
+
+    def _choose(choice):
+        result["choice"] = choice
+        result["room_name"] = entry.get().strip()
+        root.destroy()
+
+    button_frame = tk.Frame(root)
+    button_frame.pack(padx=10, pady=(0, 10))
+    tk.Button(button_frame, text="Create", command=lambda: _choose("create")).pack(side=tk.LEFT, padx=5)
+    tk.Button(button_frame, text="Join", command=lambda: _choose("join")).pack(side=tk.LEFT, padx=5)
+    tk.Button(button_frame, text="Cancel", command=lambda: _choose("cancel")).pack(side=tk.LEFT, padx=5)
+
+    root.protocol("WM_DELETE_WINDOW", lambda: _choose("cancel"))  # closing the window = Cancel
+    root.mainloop()
+
+    if result["choice"] == "join":
+        return "join", result["room_name"]
+    if result["choice"] == "create":
+        return "create", None
+    return "cancel", None
+
+
+def _wait_for_room_result(connection_state, timeout_seconds=1.0):
+    """Mirrors _wait_for_login_rejection's polling-sleep-loop style -
+    gives the server a brief window to answer our room command before any
+    cv2 window opens. Returns True (meaning "stop, don't open a game
+    window") once connection_state.room_not_found is set; returns False
+    (meaning "proceed") once connection_state.room_id is set, or once the
+    timeout passes without either - same optimistic-on-timeout behavior
+    as _wait_for_login_rejection."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if connection_state.room_not_found:
+            return True
+        if connection_state.room_id is not None:
+            return False
         time.sleep(0.05)
     return False
 
@@ -282,8 +372,15 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
 
     if connection_state.assigned_color is not None:
         color_label = "White" if connection_state.assigned_color == "w" else "Black"
+        title = f"{WINDOW_NAME} - You are {color_label}"
+        # Extending the same title string (rather than a separate on-canvas
+        # overlay) is the simpler option here - the room_id is static for
+        # the whole session, exactly like the color label already is, so
+        # it belongs in the same one-time title update.
+        if connection_state.room_id is not None:
+            title += f" - Room: {connection_state.room_id}"
         try:
-            cv2.setWindowTitle(WINDOW_NAME, f"{WINDOW_NAME} - You are {color_label}")
+            cv2.setWindowTitle(WINDOW_NAME, title)
         except Exception:
             pass  # some OpenCV builds lack setWindowTitle - stdout print already covers it
 
@@ -370,16 +467,25 @@ def main(server_uri=None, config=settings):
         on_assigned_color=connection_state.on_assigned_color, on_rejected=connection_state.on_rejected,
         on_login_rejected=connection_state.on_login_rejected, on_login_success=connection_state.on_login_success,
         on_disconnect_countdown=disconnect_countdown_state.update,
+        on_room_created=connection_state.on_room_created, on_room_joined=connection_state.on_room_joined,
+        on_room_not_found=connection_state.on_room_not_found,
     )
     network_thread.start()
     network_thread.send_login(username, password)
 
     try:
         if not _wait_for_login_rejection(connection_state):
-            _run_loop(
-                network_thread, connection_state, frame_cache, score_state, move_log_state,
-                disconnect_countdown_state, game_over_state, config,
-            )
+            choice, room_name = _prompt_room_choice()  # native dialog, before any cv2 window
+            if choice == "create":
+                network_thread.send_room_create()
+            elif choice == "join":
+                network_thread.send_room_join(room_name)
+
+            if choice != "cancel" and not _wait_for_room_result(connection_state):
+                _run_loop(
+                    network_thread, connection_state, frame_cache, score_state, move_log_state,
+                    disconnect_countdown_state, game_over_state, config,
+                )
     finally:
         network_thread.stop()
 

@@ -31,6 +31,32 @@ async def _login(connection, username="tester", password="hunter2"):
     await connection.send(json.dumps({"type": "login", "username": username, "password": password}))
 
 
+async def _create_room(connection):
+    # Every connection must, immediately after logging in, either create
+    # or join a room (server/room_registry.py's GameSession) before any
+    # color assignment/click/jump handling happens.
+    await connection.send(json.dumps({"type": "room", "action": "create"}))
+    payload = await _next_message_of_type(connection, "room_created")
+    return payload["room_id"]
+
+
+async def _join_room(connection, room_id):
+    await connection.send(json.dumps({"type": "room", "action": "join", "room_name": room_id}))
+
+
+async def _login_and_create_room(connection, username="tester", password="hunter2"):
+    await _login(connection, username, password)
+    await _next_message_of_type(connection, "login_success")
+    return await _create_room(connection)
+
+
+async def _login_and_join_room(connection, room_id, username="tester", password="hunter2"):
+    await _login(connection, username, password)
+    await _next_message_of_type(connection, "login_success")
+    await _join_room(connection, room_id)
+    await _next_message_of_type(connection, "room_joined")
+
+
 def test_client_receives_a_frame_update_after_sending_a_click(tmp_path):
     async def scenario():
         server_task = asyncio.create_task(
@@ -39,7 +65,7 @@ def test_client_receives_a_frame_update_after_sending_a_click(tmp_path):
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT}") as connection:
-                await _login(connection)
+                await _login_and_create_room(connection)
                 await connection.send(json.dumps({"type": "click", "x": 0, "y": 0}))
                 payload = await _next_message_of_type(connection, "frame_update")
 
@@ -70,7 +96,7 @@ def test_client_receives_a_frame_update_with_an_in_flight_move(tmp_path):
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 1}") as connection:
-                await _login(connection)
+                await _login_and_create_room(connection)
                 # Board's starting position (boards/start.txt) has a white
                 # pawn at row 6, col 0 - pixel (0, 600) at CELL_SIZE=100 -
                 # moving it two squares forward keeps a move in flight long
@@ -109,7 +135,7 @@ def test_client_receives_a_move_made_broadcast_distinct_from_frame_update(tmp_pa
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 2}") as connection:
-                await _login(connection)
+                await _login_and_create_room(connection)
                 await connection.send(json.dumps({"type": "click", "x": 0, "y": 600}))
                 await connection.send(json.dumps({"type": "click", "x": 0, "y": 400}))
 
@@ -137,17 +163,17 @@ def test_first_two_connections_get_white_and_black_third_gets_rejected(tmp_path)
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as first:
-                await _login(first, "alice")
+                room_id = await _login_and_create_room(first, "alice")
                 first_payload = await _next_message_of_type(first, "assigned_color")
                 assert first_payload["color"] == "w"
 
                 async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as second:
-                    await _login(second, "bob")
+                    await _login_and_join_room(second, room_id, "bob")
                     second_payload = await _next_message_of_type(second, "assigned_color")
                     assert second_payload["color"] == "b"
 
                     async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 3}") as third:
-                        await _login(third, "carol")
+                        await _login_and_join_room(third, room_id, "carol")
                         third_payload = await _next_message_of_type(third, "rejected")
                         assert third_payload["reason"] == "game_full"
 
@@ -170,11 +196,7 @@ def test_each_connection_receives_its_own_selected_cell_in_frame_update(tmp_path
     # confirms the tick loop's per-connection "selected" personalization
     # (server/connection_manager.py's controller_for/send) actually gives
     # each client its own Controller.selected, not the other's and not
-    # null, even though both share one broadcast engine snapshot. Also a
-    # regression check for an earlier register() bugfix - registering a
-    # connection with its controller used to raise a TypeError before
-    # every connection attempt, which would have made this scenario fail
-    # outright rather than merely assert wrong values.
+    # null, even though both share one broadcast engine snapshot.
     async def scenario():
         server_task = asyncio.create_task(
             run_server(host=TEST_HOST, port=TEST_PORT + 5, user_db_path=str(tmp_path / "users.db")),
@@ -182,12 +204,12 @@ def test_each_connection_receives_its_own_selected_cell_in_frame_update(tmp_path
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 5}") as first:
-                await _login(first, "alice")
+                room_id = await _login_and_create_room(first, "alice")
                 first_assigned = await _next_message_of_type(first, "assigned_color")
                 assert first_assigned["color"] == "w"
 
                 async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 5}") as second:
-                    await _login(second, "bob")
+                    await _login_and_join_room(second, room_id, "bob")
                     second_assigned = await _next_message_of_type(second, "assigned_color")
                     assert second_assigned["color"] == "b"
 
@@ -228,16 +250,17 @@ def test_a_freed_color_slot_is_reassigned_to_the_next_connection(tmp_path):
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 4}") as first:
-                await _login(first, "alice")
+                room_id = await _login_and_create_room(first, "alice")
                 first_payload = await _next_message_of_type(first, "assigned_color")
                 assert first_payload["color"] == "w"
 
             # `first` is now closed (its `async with` block exited) -
-            # SessionManager.release() should have freed "w" for reuse.
+            # SessionManager.release() should have freed "w" for reuse -
+            # so the second connection joins the SAME room to reclaim it.
             await asyncio.sleep(0.2)
 
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 4}") as second:
-                await _login(second, "bob")
+                await _login_and_join_room(second, room_id, "bob")
                 second_payload = await _next_message_of_type(second, "assigned_color")
                 assert second_payload["color"] == "w"
         finally:
@@ -258,7 +281,7 @@ def test_a_valid_login_gets_the_normal_assigned_color_flow(tmp_path):
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 6}") as connection:
-                await _login(connection, "dave")
+                await _login_and_create_room(connection, "dave")
                 payload = await _next_message_of_type(connection, "assigned_color")
                 assert payload["color"] == "w"
         finally:
@@ -421,11 +444,11 @@ def test_a_mid_game_disconnect_counts_down_then_resigns_to_the_other_player(tmp_
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 12}") as white:
-                await _login(white, "alice")
+                room_id = await _login_and_create_room(white, "alice")
                 await _next_message_of_type(white, "assigned_color")
 
                 async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 12}") as black:
-                    await _login(black, "bob")
+                    await _login_and_join_room(black, room_id, "bob")
                     await _next_message_of_type(black, "assigned_color")
 
                     await white.close()  # white disconnects mid-game
@@ -437,6 +460,110 @@ def test_a_mid_game_disconnect_counts_down_then_resigns_to_the_other_player(tmp_
                     game_ended_payload = await _next_message_of_type(black, "game_ended", attempts=40)
                     assert game_ended_payload["winner"] == "b"
                     assert game_ended_payload["reason"] == "disconnect_timeout"
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_two_created_rooms_are_independent_games(tmp_path):
+    # A move in one room's GameSession must never affect the other's -
+    # confirms each "room"/"create" gets its own engine/board, not a
+    # shared global one.
+    async def scenario():
+        server_task = asyncio.create_task(
+            run_server(host=TEST_HOST, port=TEST_PORT + 13, user_db_path=str(tmp_path / "users.db")),
+        )
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 13}") as first:
+                first_room_id = await _login_and_create_room(first, "alice")
+                await _next_message_of_type(first, "assigned_color")
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 13}") as second:
+                    second_room_id = await _login_and_create_room(second, "bob")
+                    await _next_message_of_type(second, "assigned_color")
+
+                    assert first_room_id != second_room_id
+
+                    # Move white's pawn in the FIRST room only.
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                    move_payload = await _next_message_of_type(first, "move_made")
+                    assert move_payload["start"] == [6, 0]
+
+                    # The SECOND room's own frame_update must still show
+                    # its own starting position untouched - (6, 0) still
+                    # holds a white pawn there, not moved/emptied.
+                    second_frame = await _next_message_of_type(second, "frame_update")
+                    assert second_frame["cells"][6][0] == "wP"
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_joining_a_created_room_puts_both_connections_in_the_same_session(tmp_path):
+    async def scenario():
+        server_task = asyncio.create_task(
+            run_server(host=TEST_HOST, port=TEST_PORT + 14, user_db_path=str(tmp_path / "users.db")),
+        )
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 14}") as first:
+                room_id = await _login_and_create_room(first, "alice")
+                first_assigned = await _next_message_of_type(first, "assigned_color")
+                assert first_assigned["color"] == "w"
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 14}") as second:
+                    await _login_and_join_room(second, room_id, "bob")
+                    second_assigned = await _next_message_of_type(second, "assigned_color")
+                    assert second_assigned["color"] == "b"
+
+                    # A move made by white in this shared session must be
+                    # visible to black too, over the SAME session's bus.
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                    move_payload = await _next_message_of_type(second, "move_made")
+                    assert move_payload["color"] == "w"
+                    assert move_payload["piece"] == "wP"
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_joining_an_unknown_room_gets_room_not_found_and_is_disconnected(tmp_path):
+    async def scenario():
+        server_task = asyncio.create_task(
+            run_server(host=TEST_HOST, port=TEST_PORT + 15, user_db_path=str(tmp_path / "users.db")),
+        )
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 15}") as connection:
+                await _login(connection, "erin", "correct-horse")
+                await _next_message_of_type(connection, "login_success")
+
+                await _join_room(connection, "no-such-room")
+                payload = await _next_message_of_type(connection, "room_not_found")
+                assert payload["room_name"] == "no-such-room"
+
+                # The server closes a room_not_found connection outright -
+                # it must never receive an assigned_color.
+                with pytest.raises(Exception):
+                    await asyncio.wait_for(connection.recv(), timeout=2)
         finally:
             server_task.cancel()
             try:
