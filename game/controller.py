@@ -1,11 +1,11 @@
 class Controller:
-    """Translates clicks/jumps into GameEngine commands. Owns selection
-    state and pixel mapping; decides nothing about chess legality, never
-    mutates Board, and never touches timing directly.
+    """Translates user clicks/jumps into GameEngine commands and owns the
+    selected-cell state. It decides nothing about chess legality - it only
+    turns pixels into cells (via BoardMapper) and drives the engine's public
+    command path, then updates its selection from the engine's MoveResult.
 
-    Talks to GameEngine only through its public API (request_move,
-    request_jump, is_cell_busy, game_over, and read-only board access for
-    selection-UX decisions like "is this my own piece").
+    Both collaborators are injected. Selection is deliberately kept here (not
+    on the engine) so the engine stays a pure application service.
     """
 
     def __init__(self, engine, board_mapper):
@@ -17,55 +17,49 @@ class Controller:
     def selected(self):
         return self._selected
 
-    def click(self, x, y):
-        if self._engine.game_over:
-            return
+    def deselect(self):
+        """Clears the current selection without going through a click -
+        for external callers (e.g. a networked ownership guard) that need
+        to cancel a selection Controller itself would otherwise keep."""
+        self._selected = None
 
+    def click(self, x, y):
         cell = self._mapper.pixel_to_cell(x, y)
         if cell is None:
+            # Outside the board: leave selection untouched (a no-op click).
             return
 
         if self._selected is None:
-            self._selected = self._select(cell)
-            return
-
-        self._act_on_selection(cell)
-
-    def jump(self, x, y):
-        self._selected = None
-        if self._engine.game_over:
-            return
-
-        cell = self._mapper.pixel_to_cell(x, y)
-        if cell is None:
-            return
-
-        self._engine.request_jump(cell)
-
-    # -- internal helpers -------------------------------------------------
-
-    def _select(self, cell):
-        if self._engine.is_cell_busy(cell):
-            return None
-        board = self._engine.board
-        return cell if not board.is_empty(*cell) else None
-
-    def _act_on_selection(self, cell):
-        start = self._selected
-        board = self._engine.board
-        piece = board.get(*start)
-
-        if board.is_empty(*start) or self._engine.is_cell_busy(start):
-            self._selected = None
-            return
-
-        target = board.get(*cell)
-        if not board.is_empty(*cell) and target[0] == piece[0]:
-            if not self._engine.is_cell_busy(cell):
+            # First click selects a piece if that cell can be a move source.
+            # can_select() settles pending arrivals and refuses after game over.
+            if self._engine.can_select(cell):
                 self._selected = cell
             return
 
-        result = self._engine.request_move(start, cell)
-        if result.accepted:
+        # Second click: ask the engine to move, then update selection.
+        result = self._engine.request_move(self._selected, cell)
+        self._resolve_selection(result, cell)
+
+    def jump(self, x, y):
+        # A jump always ends any pending selection first (matches the engine's
+        # historical order: selection is cleared before the jump is attempted).
+        self._selected = None
+        cell = self._mapper.pixel_to_cell(x, y)
+        if cell is None:
+            return
+        self._engine.request_jump(cell)
+
+    def _resolve_selection(self, result, cell):
+        # This is a real-time game with no turn concept - any color's piece
+        # may be selected at any time (GameEngine.can_select performs no
+        # color check) - so any rejected second click (friendly destination,
+        # illegal move for the selected piece, or anything else) re-selects
+        # `cell` immediately if it currently holds a selectable piece,
+        # regardless of color. A rejected click on a cell that can't be
+        # selected (empty, busy, on cooldown, ...) clears the selection
+        # instead, and so does an accepted move (the selected piece is now
+        # in flight).
+        if not result.is_accepted and self._engine.can_select(cell):
+            self._selected = cell
+        else:
             self._selected = None
-        # illegal target or a move already in flight: keep current selection

@@ -1,0 +1,3 @@
+# First external dependency added to the project (for server/, the
+# WebSocket server hosting a shared GameEngine - see server/game_server.py).
+websockets>=15.0,<16
