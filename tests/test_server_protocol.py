@@ -1,7 +1,10 @@
 import json
 
 from realtime.models import Move, Jump
-from server.protocol import ClickCommand, JumpCommand, parse_command, serialize_frame_update, serialize_snapshot
+from server.protocol import (
+    ClickCommand, JumpCommand, LoginCommand, parse_command, serialize_frame_update,
+    serialize_login_rejected, serialize_login_success, serialize_snapshot,
+)
 from view.snapshot import GameSnapshot
 
 
@@ -33,6 +36,51 @@ def test_parse_command_returns_none_for_non_numeric_coordinates():
 
 def test_parse_command_returns_none_for_non_dict_json():
     assert parse_command(json.dumps([1, 2, 3])) is None
+
+
+def test_parse_command_recognizes_a_login():
+    command = parse_command(json.dumps({"type": "login", "username": "alice", "password": "hunter2"}))
+    assert command == LoginCommand(username="alice", password="hunter2")
+
+
+def test_parse_command_returns_none_for_login_missing_username():
+    assert parse_command(json.dumps({"type": "login", "password": "hunter2"})) is None
+
+
+def test_parse_command_returns_none_for_login_missing_password():
+    assert parse_command(json.dumps({"type": "login", "username": "alice"})) is None
+
+
+def test_parse_command_returns_a_login_command_for_an_empty_username():
+    # Parsing only checks *shape* (is "username"/"password" present and
+    # stringy) - whether a blank username is a valid *login* is a separate
+    # question the caller (server/game_server.py's login gate) decides,
+    # since an empty-but-present username is not malformed input.
+    command = parse_command(json.dumps({"type": "login", "username": "   ", "password": "hunter2"}))
+    assert command == LoginCommand(username="   ", password="hunter2")
+
+
+def test_parse_command_returns_none_for_an_unrecognized_type_even_with_login_fields():
+    assert parse_command(json.dumps({"type": "shout", "username": "alice", "password": "hunter2"})) is None
+
+
+def test_serialize_login_rejected_has_the_login_rejected_type_and_reason():
+    payload = serialize_login_rejected("blank_username")
+
+    assert payload == {"type": "login_rejected", "reason": "blank_username"}
+
+
+def test_serialize_login_rejected_supports_a_wrong_password_reason():
+    payload = serialize_login_rejected("wrong_password")
+
+    assert payload == {"type": "login_rejected", "reason": "wrong_password"}
+
+
+def test_serialize_login_success_has_the_login_success_type_rating_and_new_account_flag():
+    payload = serialize_login_success(rating=1200, is_new_account=True)
+
+    assert payload == {"type": "login_success", "rating": 1200, "is_new_account": True}
+    json.dumps(payload)  # every value must actually be JSON-serializable
 
 
 def test_serialize_snapshot_converts_tuples_to_lists():

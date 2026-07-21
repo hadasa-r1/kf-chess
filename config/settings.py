@@ -38,3 +38,8 @@ ALLOW_CONCURRENT_MOVES = True
 # Kings are excluded (0) since a king capture already ends the game via
 # KingCaptureWinCondition rather than scoring it.
 PIECE_VALUES = {"P": 1, "N": 3, "B": 3, "R": 5, "Q": 9, "K": 0}
+
+# SQLite file backing server/user_store.py's persisted accounts (username,
+# password hash, rating). Server-only: local hotseat play (main_gui.py)
+# never touches this.
+USER_DB_PATH = "kf_chess_users.db"

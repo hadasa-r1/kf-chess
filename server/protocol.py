@@ -27,22 +27,50 @@ class JumpCommand:
     y: int
 
 
+@dataclass(frozen=True)
+class LoginCommand:
+    username: str
+    password: str
+
+
 def parse_command(text):
-    """Turn one incoming message into a ClickCommand/JumpCommand, or None
-    for anything malformed (invalid JSON, missing/wrong-typed fields, an
-    unrecognized "type"). Callers should skip a None rather than raise."""
+    """Turn one incoming message into a ClickCommand/JumpCommand/
+    LoginCommand, or None for anything malformed (invalid JSON,
+    missing/wrong-typed fields, an unrecognized "type"). Callers should
+    skip a None rather than raise.
+
+    Note: this only checks that "username"/"password" are present and
+    string-convertible - it does NOT reject an empty/whitespace-only
+    username, and it does NOT check the password against anything (that's
+    server/user_store.py's job). Both are login-*validity* questions, not
+    parsing-*shape* ones; see server/game_server.py's login gate."""
     try:
         payload = json.loads(text)
         command_type = payload["type"]
-        x = int(payload["x"])
-        y = int(payload["y"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
         logger.warning("Dropping malformed command %r: %s", text, error)
         return None
 
-    if command_type == "click":
-        return ClickCommand(x=x, y=y)
-    if command_type == "jump":
+    if command_type == "login":
+        try:
+            username = str(payload["username"])
+            password = str(payload["password"])
+        except (KeyError, TypeError) as error:
+            # Never log `text` here - unlike click/jump, it may contain a
+            # real password.
+            logger.warning("Dropping malformed login command: %s", error)
+            return None
+        return LoginCommand(username=username, password=password)
+
+    if command_type in ("click", "jump"):
+        try:
+            x = int(payload["x"])
+            y = int(payload["y"])
+        except (KeyError, TypeError, ValueError) as error:
+            logger.warning("Dropping malformed command %r: %s", text, error)
+            return None
+        if command_type == "click":
+            return ClickCommand(x=x, y=y)
         return JumpCommand(x=x, y=y)
 
     logger.warning("Dropping command with unknown type %r", command_type)
@@ -151,3 +179,21 @@ def serialize_rejected(reason):
     Viewer support for these connections is a later task - see
     SessionManager's `# TODO: viewers`."""
     return {"type": "rejected", "reason": reason}
+
+
+def serialize_login_rejected(reason):
+    """Sent to a connection whose very first message wasn't a valid login
+    (wrong message type, an empty/whitespace-only username, or a
+    "wrong_password" for an existing username - see server/user_store.py)
+    - immediately before the server closes it. A distinct "type" from
+    "rejected" (which is about the game being full, not about login), so
+    a client can tell the two apart and react differently."""
+    return {"type": "login_rejected", "reason": reason}
+
+
+def serialize_login_success(rating, is_new_account):
+    """Sent right after a successful login (new account or re-
+    authentication) - lets the client show the player their current
+    rating and whether they just registered, before color assignment
+    even happens (see server/user_store.py, server/game_server.py)."""
+    return {"type": "login_success", "rating": rating, "is_new_account": is_new_account}

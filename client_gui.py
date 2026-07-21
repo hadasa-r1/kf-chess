@@ -9,13 +9,22 @@ arrive as separate score_changed/move_made events (re-published on a
 local EventBus by RemoteEventSource, then read by the same, unmodified
 ScoreDisplayState/MoveLogDisplayState main_gui.py already uses locally).
 
+Before connecting, this prompts for a username and password in the
+terminal (genuine shell prompts, not a GUI dialog, per the slide's
+requirement - the password uses getpass.getpass so it isn't echoed) and
+sends them as the connection's very first outgoing message; the server
+gates every connection on this login (persisted account + ELO rating -
+see server/user_store.py) before color assignment (see
+server/game_server.py).
+
 Out of scope, left as follow-ups: InvalidMoveEvent feedback to the client
 (an invalid selection currently just fails silently - see
-client_net/remote_controller.py), reconnection handling, and any
-login/room UI.
+client_net/remote_controller.py), reconnection handling, matchmaking/a
+"Play" button, and any room UI.
 """
 
 import asyncio
+import getpass
 import sys
 import threading
 import time
@@ -55,12 +64,15 @@ class _NetworkThread:
     this thread's own event loop, not the caller's.
     """
 
-    def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected):
+    def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected,
+                 on_login_rejected, on_login_success):
         self._uri = uri
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
         self._on_assigned_color = on_assigned_color
         self._on_rejected = on_rejected
+        self._on_login_rejected = on_login_rejected
+        self._on_login_success = on_login_success
         self._loop = None
         self._connection = None
         self._network_client = None
@@ -71,6 +83,9 @@ class _NetworkThread:
         """Starts the background thread and blocks until connected."""
         self._thread.start()
         self._ready.wait()
+
+    def send_login(self, username, password):
+        asyncio.run_coroutine_threadsafe(self._network_client.send_login(username, password), self._loop)
 
     def send_click(self, x, y):
         asyncio.run_coroutine_threadsafe(self._network_client.send_click(x, y), self._loop)
@@ -96,22 +111,28 @@ class _NetworkThread:
             self._network_client = NetworkClient(
                 connection, on_frame_update=self._on_frame_update, on_remote_event=self._on_remote_event,
                 on_assigned_color=self._on_assigned_color, on_rejected=self._on_rejected,
+                on_login_rejected=self._on_login_rejected, on_login_success=self._on_login_success,
             )
             self._ready.set()
             await self._network_client.run()
 
 
 class _ConnectionState:
-    """Shared holder for the two things the network thread learns before
-    any board data exists: which color we were assigned, or that the
-    server rejected us outright (a 3rd+ connection - see
-    server/session_manager.py). Plain attributes, not a lock-protected
-    read model like FrameStateCache: each is written at most once, by the
+    """Shared holder for the things the network thread learns before any
+    board data exists: which color we were assigned, that the server
+    rejected us outright (a 3rd+ connection - see
+    server/session_manager.py), or that our login itself was rejected
+    (see server/game_server.py's login gate - checked before color
+    assignment even happens). Plain attributes, not a lock-protected read
+    model like FrameStateCache: each is written at most once, by the
     network thread, and only ever read from the main thread's loop."""
 
     def __init__(self):
         self.assigned_color = None
         self.rejected_reason = None
+        self.login_rejected_reason = None
+        self.rating = None
+        self.is_new_account = None
 
     def on_assigned_color(self, color):
         print(f"Assigned color: {color}")
@@ -123,6 +144,18 @@ class _ConnectionState:
         print(f"Connection rejected by server: {reason}")
         self.rejected_reason = reason
 
+    def on_login_rejected(self, reason):
+        print(f"Login rejected by server: {reason}")
+        self.login_rejected_reason = reason
+
+    def on_login_success(self, rating, is_new_account):
+        if is_new_account:
+            print(f"Registered new account - starting rating: {rating}")
+        else:
+            print(f"Logged in - current rating: {rating}")
+        self.rating = rating
+        self.is_new_account = is_new_account
+
 
 def _connecting_frame(width=400, height=200):
     frame = np.zeros((height, width, 3), dtype=np.uint8)
@@ -133,10 +166,10 @@ def _connecting_frame(width=400, height=200):
     return frame
 
 
-def _rejected_frame(reason, width=400, height=200):
+def _rejected_frame(reason, title="Connection rejected:", width=400, height=200):
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     cv2.putText(
-        frame, "Connection rejected:", (20, height // 2 - 20),
+        frame, title, (20, height // 2 - 20),
         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
     )
     cv2.putText(
@@ -144,6 +177,41 @@ def _rejected_frame(reason, width=400, height=200):
         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
     )
     return frame
+
+
+def _prompt_username():
+    """A genuine shell prompt, not a GUI dialog - per this slide's
+    explicit requirement. Re-prompts once on a blank entry; if it's still
+    blank after that, sends it anyway and lets the server's login gate
+    (server/game_server.py) reject it, same as any other invalid login."""
+    username = input("Enter your username: ").strip()
+    if not username:
+        username = input("Username cannot be blank. Enter your username: ").strip()
+    return username
+
+
+def _prompt_password():
+    """getpass.getpass, not input() - still a genuine shell prompt (per
+    the slide's requirement), just one that doesn't echo the password to
+    the terminal. Not stripped: unlike a username, whitespace could
+    legitimately be part of a real password, and the server hashes
+    whatever bytes it receives regardless."""
+    return getpass.getpass("Enter your password: ")
+
+
+def _wait_for_login_rejection(connection_state, timeout_seconds=1.0):
+    """Gives the server a brief window to respond to our login before any
+    cv2 window opens - the slide requires that a rejected login never
+    shows a game window at all, unlike a mid-game "rejected" (game_full),
+    which _run_loop already handles with a placeholder frame in an
+    already-open window. A login round trip is a single message each way,
+    so a short timeout is enough for local/dev use."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if connection_state.login_rejected_reason is not None:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
@@ -170,6 +238,14 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     while frame_cache.latest() is None:
+        if connection_state.login_rejected_reason is not None:
+            # Fallback only - main() already checks this before ever
+            # calling _run_loop, so a window should not normally reach
+            # this branch at all.
+            cv2.imshow(WINDOW_NAME, _rejected_frame(connection_state.login_rejected_reason, title="Login rejected:"))
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            return
         if connection_state.rejected_reason is not None:
             cv2.imshow(WINDOW_NAME, _rejected_frame(connection_state.rejected_reason))
             cv2.waitKey(0)
@@ -226,6 +302,9 @@ def main(server_uri=None, config=settings):
     end for networked play."""
     uri = server_uri or (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERVER_URI)
 
+    username = _prompt_username()  # shell prompts, before any window opens
+    password = _prompt_password()
+
     frame_cache = FrameStateCache()
     connection_state = _ConnectionState()
     local_bus = EventBus()
@@ -243,11 +322,14 @@ def main(server_uri=None, config=settings):
     network_thread = _NetworkThread(
         uri, on_frame_update=frame_cache.update, on_remote_event=remote_event_source.handle_message,
         on_assigned_color=connection_state.on_assigned_color, on_rejected=connection_state.on_rejected,
+        on_login_rejected=connection_state.on_login_rejected, on_login_success=connection_state.on_login_success,
     )
     network_thread.start()
+    network_thread.send_login(username, password)
 
     try:
-        _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state, config)
+        if not _wait_for_login_rejection(connection_state):
+            _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state, config)
     finally:
         network_thread.stop()
 

@@ -35,3 +35,6 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local server data (server/user_store.py's persisted accounts)
+kf_chess_users.db

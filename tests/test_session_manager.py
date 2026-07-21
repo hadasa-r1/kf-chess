@@ -44,3 +44,27 @@ def test_release_of_an_unknown_connection_does_not_raise():
     manager = SessionManager()
 
     manager.release("never-connected")  # must not raise
+
+
+def test_connection_for_finds_the_connection_holding_a_color():
+    manager = SessionManager()
+    manager.assign_color("conn-1")  # w
+    manager.assign_color("conn-2")  # b
+
+    assert manager.connection_for("w") == "conn-1"
+    assert manager.connection_for("b") == "conn-2"
+
+
+def test_connection_for_returns_none_when_no_connection_holds_that_color():
+    manager = SessionManager()
+
+    assert manager.connection_for("w") is None
+
+
+def test_connection_for_reflects_a_release():
+    manager = SessionManager()
+    manager.assign_color("conn-1")  # w
+
+    manager.release("conn-1")
+
+    assert manager.connection_for("w") is None

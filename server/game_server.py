@@ -18,14 +18,22 @@ ScoreChangedEvent/MoveMadeEvent reach connected clients as small JSON
 messages too (see server/event_broadcast_handler.py) - a separate channel
 from the tick loop's frame_update broadcasts.
 
-A SessionManager assigns the 1st connection "w" and the 2nd "b" (a 3rd+
-is rejected outright - see session_manager.py's `# TODO: viewers`); each
-connection's real Controller is wrapped in a PlayerScopedController that
-enforces "you may only select your own color's pieces" on top of it,
-without game/controller.py itself knowing anything about color
+Every connection must log in with a username+password as its very first
+message before anything else happens: a UserStore (server/user_store.py)
+persists accounts (salted/hashed passwords, an ELO rating starting at
+1200) in a small SQLite file, independent of any connection/EventBus
+knowledge; a UserRegistry then caches connection->username for the
+lifetime of that connection (in-memory only). A RatingUpdateHandler
+(server/rating_update_handler.py) separately reacts to GameEndedEvent to
+update both players' persisted ratings via server/elo.py's pure ELO math.
+A SessionManager assigns the 1st logged-in connection "w" and the 2nd "b"
+(a 3rd+ is rejected outright - see session_manager.py's `# TODO: viewers`);
+each connection's real Controller is wrapped in a PlayerScopedController
+that enforces "you may only select your own color's pieces" on top of
+it, without game/controller.py itself knowing anything about color
 restriction (local hotseat play needs none).
 
-No login, no rooms, no matchmaking, no persistence - later steps.
+No rooms, no matchmaking - later steps.
 """
 
 from __future__ import annotations
@@ -45,10 +53,13 @@ from server.connection_manager import ConnectionManager
 from server.event_broadcast_handler import EventBroadcastHandler
 from server.player_scoped_controller import PlayerScopedController
 from server.protocol import (
-    ClickCommand, JumpCommand, parse_command, serialize_assigned_color,
-    serialize_frame_update, serialize_rejected,
+    ClickCommand, JumpCommand, LoginCommand, parse_command, serialize_assigned_color,
+    serialize_frame_update, serialize_login_rejected, serialize_login_success, serialize_rejected,
 )
+from server.rating_update_handler import RatingUpdateHandler
 from server.session_manager import SessionManager
+from server.user_registry import UserRegistry
+from server.user_store import AuthOutcome, UserStore
 from view.snapshot import cooldowns_from_engine
 # BOARD_FILE is a plain path constant with no cv2/UI machinery behind it
 # (UI/ui_config.py has no imports at all) - reused here rather than
@@ -110,41 +121,81 @@ async def _tick_loop(engine, connection_manager):
             await connection_manager.send(connection, personalized_payload)
 
 
-async def _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager):
-    color = session_manager.assign_color(connection)
-    if color is None:
-        # TODO: viewers. Reject cleanly instead of letting a 3rd+
-        # connection spectate - that's a later task (the "Rooms" slide).
-        await connection.send(json.dumps(serialize_rejected("game_full")))
+async def _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager,
+                              user_registry, user_store):
+    # A connection's very first message must be a login - checked here,
+    # before color assignment or any click/jump handling, by pulling one
+    # message off the same async iterator the rest of the handler uses
+    # below (so nothing sent after login is skipped or double-read).
+    messages = connection.__aiter__()
+    try:
+        first_message = await messages.__anext__()
+    except StopAsyncIteration:
+        return  # closed before ever sending anything
+
+    login_command = parse_command(first_message)
+    username = login_command.username.strip() if isinstance(login_command, LoginCommand) else ""
+    if not username:
+        await connection.send(json.dumps(serialize_login_rejected("invalid_username")))
         await connection.close()
         return
 
-    await connection.send(json.dumps(serialize_assigned_color(color)))
-    controller = PlayerScopedController(
-        Controller(engine=engine, board_mapper=board_mapper), color, board, board_mapper,
-    )
-    connection_manager.register(connection, controller)
+    auth_result = user_store.register_or_authenticate(username, login_command.password)
+    if auth_result.outcome is AuthOutcome.WRONG_PASSWORD:
+        await connection.send(json.dumps(serialize_login_rejected("wrong_password")))
+        await connection.close()
+        return
+
+    user_registry.login(connection, username)
+    await connection.send(json.dumps(serialize_login_success(
+        rating=auth_result.rating, is_new_account=auth_result.outcome is AuthOutcome.NEW_ACCOUNT_CREATED,
+    )))
     try:
-        async for message in connection:
-            command = parse_command(message)
-            if isinstance(command, ClickCommand):
-                controller.click(command.x, command.y)
-            elif isinstance(command, JumpCommand):
-                controller.jump(command.x, command.y)
+        color = session_manager.assign_color(connection)
+        if color is None:
+            # TODO: viewers. Reject cleanly instead of letting a 3rd+
+            # connection spectate - that's a later task (the "Rooms" slide).
+            await connection.send(json.dumps(serialize_rejected("game_full")))
+            await connection.close()
+            return
+
+        await connection.send(json.dumps(serialize_assigned_color(color)))
+        controller = PlayerScopedController(
+            Controller(engine=engine, board_mapper=board_mapper), color, board, board_mapper,
+        )
+        connection_manager.register(connection, controller)
+        try:
+            async for message in messages:
+                command = parse_command(message)
+                if isinstance(command, ClickCommand):
+                    controller.click(command.x, command.y)
+                elif isinstance(command, JumpCommand):
+                    controller.jump(command.x, command.y)
+        finally:
+            connection_manager.unregister(connection)
+            session_manager.release(connection)
     finally:
-        connection_manager.unregister(connection)
-        session_manager.release(connection)
+        user_registry.logout(connection)
 
 
-async def run_server(host=HOST, port=PORT):
+async def run_server(host=HOST, port=PORT, user_db_path=None):
+    # `user_db_path` is overridable (rather than always settings.USER_DB_PATH)
+    # so tests can point it at a throwaway file instead of ever touching the
+    # real one - see tests/test_game_server_integration.py.
     engine, _controller, board, bus = _build_game(_load_board_lines(), settings)
     board_mapper = BoardMapper(board, settings.CELL_SIZE)
     connection_manager = ConnectionManager()
     session_manager = SessionManager()
+    user_registry = UserRegistry()
+    user_store = UserStore(user_db_path or settings.USER_DB_PATH)
     event_broadcast_handler = EventBroadcastHandler(bus, connection_manager)
+    rating_update_handler = RatingUpdateHandler(bus, user_store, session_manager, user_registry)
 
     async def handler(connection):
-        await _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager)
+        await _handle_connection(
+            connection, engine, board, board_mapper, connection_manager, session_manager,
+            user_registry, user_store,
+        )
 
     tick_task = asyncio.create_task(_tick_loop(engine, connection_manager))
     try:

@@ -1,16 +1,23 @@
 """Thin websockets client wrapper.
 
-Two responsibilities: sending click/jump commands to the server, and
-receiving incoming messages and dispatching each by its "type": a
-frame_update is decoded into a FrameState and handed to on_frame_update;
-a score_changed/move_made is handed, undecoded, to on_remote_event (whose
-job - see client_net/remote_event_source.py - is turning it back into a
-real bus event); an assigned_color's color string is handed to
-on_assigned_color; a rejected's reason string is handed to on_rejected
-(see server/session_manager.py for what assigns/rejects a connection). No
-rendering, no cv2, nothing UI-specific - and kept in its own package
-(never imports from server/), since a client process must not depend on
-the server's internals.
+Three responsibilities: sending a login command (username+password, must
+be the very first outgoing message - see server/game_server.py's login
+gate) and click/jump commands to the server, and receiving incoming
+messages and dispatching each by its "type": a frame_update is decoded
+into a FrameState and handed to on_frame_update; a score_changed/move_made
+is handed, undecoded, to on_remote_event (whose job - see
+client_net/remote_event_source.py - is turning it back into a real bus
+event); an assigned_color's color string is handed to on_assigned_color;
+a rejected's reason string is handed to on_rejected (see
+server/session_manager.py for what assigns/rejects a connection); a
+login_rejected's reason string (e.g. "wrong_password" - see
+server/user_store.py) is handed to on_login_rejected, distinct from
+on_rejected since a bad login and a full game are different failures a
+client may want to react to differently; a login_success's rating/
+is_new_account is handed to on_login_success. No rendering, no cv2,
+nothing UI-specific - and kept in its own package (never imports from
+server/), since a client process must not depend on the server's
+internals. Never logs a raw password - only ever sends it onward.
 """
 
 from __future__ import annotations
@@ -38,12 +45,17 @@ def deserialize_snapshot(payload):
 
 class NetworkClient:
     def __init__(self, connection, on_frame_update, on_remote_event=None,
-                 on_assigned_color=None, on_rejected=None):
+                 on_assigned_color=None, on_rejected=None, on_login_rejected=None, on_login_success=None):
         self._connection = connection
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
         self._on_assigned_color = on_assigned_color
         self._on_rejected = on_rejected
+        self._on_login_rejected = on_login_rejected
+        self._on_login_success = on_login_success
+
+    async def send_login(self, username, password):
+        await self._connection.send(json.dumps({"type": "login", "username": username, "password": password}))
 
     async def send_click(self, x, y):
         await self._connection.send(json.dumps({"type": "click", "x": x, "y": y}))
@@ -82,5 +94,14 @@ class NetworkClient:
             elif message_type == "rejected":
                 if self._on_rejected is not None:
                     self._on_rejected(payload.get("reason"))
+            elif message_type == "login_rejected":
+                if self._on_login_rejected is not None:
+                    self._on_login_rejected(payload.get("reason"))
+            elif message_type == "login_success":
+                if self._on_login_success is not None:
+                    try:
+                        self._on_login_success(payload["rating"], payload["is_new_account"])
+                    except KeyError as error:
+                        logger.warning("Dropping malformed login_success message %r: %s", message, error)
             else:
                 logger.warning("Dropping message with unrecognized type %r", message_type)

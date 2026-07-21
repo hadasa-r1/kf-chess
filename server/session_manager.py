@@ -42,6 +42,16 @@ class SessionManager:
         # later task (the "Rooms" slide) should let it spectate instead.
         return None
 
+    def connection_for(self, color) -> object | None:
+        """Reverse lookup: which connection (if any) currently holds
+        `color`. Used by server/rating_update_handler.py to combine "who
+        is this color" with UserRegistry's "who is this connection" -
+        SessionManager itself still knows nothing about usernames."""
+        for connection, assigned_color in self._colors_by_connection.items():
+            if assigned_color == color:
+                return connection
+        return None
+
     def release(self, connection) -> None:
         """Stops tracking `connection`, freeing its color slot.
 
