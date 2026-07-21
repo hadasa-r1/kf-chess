@@ -16,8 +16,8 @@ def _make_handler(tmp_path):
 
 
 def _seat_players(session_manager, user_registry, white_username, black_username):
-    session_manager.assign_color("white-conn")  # w
-    session_manager.assign_color("black-conn")  # b
+    session_manager.assign_color("white-conn", white_username)  # w
+    session_manager.assign_color("black-conn", black_username)  # b
     user_registry.login("white-conn", white_username)
     user_registry.login("black-conn", black_username)
 
@@ -65,7 +65,7 @@ def test_black_winning_updates_ratings_in_the_opposite_direction(tmp_path):
 def test_a_game_with_only_one_player_seated_is_skipped_without_crashing(tmp_path):
     bus, user_store, session_manager, user_registry = _make_handler(tmp_path)
     user_store.register_or_authenticate("alice", "pw")
-    session_manager.assign_color("white-conn")  # w
+    session_manager.assign_color("white-conn", "alice")  # w
     user_registry.login("white-conn", "alice")
     # No black connection/color assigned at all.
 

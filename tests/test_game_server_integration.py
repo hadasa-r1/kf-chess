@@ -704,3 +704,104 @@ def test_a_third_connection_becomes_a_viewer_instead_of_being_rejected(tmp_path)
                 pass
 
     asyncio.run(scenario())
+
+
+def test_reconnecting_with_the_same_username_within_the_grace_period_resumes_the_original_color(tmp_path):
+    # Real end-to-end proof of reconnection: white disconnects, black sees
+    # the disconnect_countdown start, white reconnects (same username, same
+    # room) well before the grace period elapses and gets "w" back via a
+    # normal assigned_color message (not a new message type), black sees a
+    # disconnect_countdown_cancelled, the game keeps going (a real move
+    # still works), and no game_ended ever fires for this disconnect - even
+    # after the original grace period would have elapsed.
+    async def scenario():
+        server_task = asyncio.create_task(run_server(
+            host=TEST_HOST, port=TEST_PORT + 18, user_db_path=str(tmp_path / "users.db"),
+            disconnect_countdown_seconds=1,
+        ))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 18}") as white:
+                room_id = await _login_and_create_room(white, "alice")
+                await _next_message_of_type(white, "assigned_color")
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 18}") as black:
+                    await _login_and_join_room(black, room_id, "bob")
+                    await _next_message_of_type(black, "assigned_color")
+
+                    await white.close()  # white disconnects mid-game
+
+                    countdown_payload = await _next_message_of_type(black, "disconnect_countdown")
+                    assert countdown_payload["color"] == "w"
+
+                    async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 18}") as reconnected_white:
+                        await _login_and_join_room(reconnected_white, room_id, "alice")
+
+                        reassigned_payload = await _next_message_of_type(reconnected_white, "assigned_color")
+                        assert reassigned_payload["color"] == "w"
+
+                        cancelled_payload = await _next_message_of_type(black, "disconnect_countdown_cancelled")
+                        assert cancelled_payload["color"] == "w"
+
+                        # The game truly continues: the reconnected
+                        # connection's own PlayerScopedController can still
+                        # move white's pieces.
+                        await reconnected_white.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                        await reconnected_white.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                        move_payload = await _next_message_of_type(reconnected_white, "move_made")
+                        assert move_payload["color"] == "w"
+                        assert move_payload["start"] == [6, 0]
+
+                        # No resignation ever fires for this disconnect,
+                        # even well past what the original 1s grace period
+                        # would have allowed - the countdown was genuinely
+                        # cancelled, not just still pending.
+                        with pytest.raises(AssertionError):
+                            await _next_message_of_type(black, "game_ended", attempts=60, timeout=1)
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_disconnecting_without_reconnecting_still_resigns_after_the_grace_period(tmp_path):
+    # Confirms the pre-existing disconnect-timeout resign behavior (see
+    # test_a_mid_game_disconnect_counts_down_then_resigns_to_the_other_player)
+    # is unaffected by adding reconnection support: with nobody ever
+    # reconnecting as "alice", the countdown must still run out and resign
+    # white to black exactly as before.
+    async def scenario():
+        server_task = asyncio.create_task(run_server(
+            host=TEST_HOST, port=TEST_PORT + 19, user_db_path=str(tmp_path / "users.db"),
+            disconnect_countdown_seconds=1,
+        ))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 19}") as white:
+                room_id = await _login_and_create_room(white, "alice")
+                await _next_message_of_type(white, "assigned_color")
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 19}") as black:
+                    await _login_and_join_room(black, room_id, "bob")
+                    await _next_message_of_type(black, "assigned_color")
+
+                    await white.close()  # white disconnects mid-game, and never reconnects
+
+                    countdown_payload = await _next_message_of_type(black, "disconnect_countdown")
+                    assert countdown_payload["color"] == "w"
+
+                    game_ended_payload = await _next_message_of_type(black, "game_ended", attempts=40)
+                    assert game_ended_payload["winner"] == "b"
+                    assert game_ended_payload["reason"] == "disconnect_timeout"
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())

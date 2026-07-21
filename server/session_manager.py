@@ -21,13 +21,15 @@ COLORS_IN_JOIN_ORDER = ("w", "b")
 class SessionManager:
     def __init__(self):
         self._colors_by_connection = {}
+        self._username_by_color = {}
         self._game_started = False
 
-    def assign_color(self, connection) -> str | None:
+    def assign_color(self, connection, username) -> str | None:
         """Returns "w" for the 1st connection ever given a slot, "b" for
-        the 2nd, and None for the 3rd and beyond. Calling this again for a
-        connection that already has a color returns that same color
-        without consuming another slot."""
+        the 2nd, and None for the 3rd and beyond (server/game_server.py
+        turns that 3rd+ connection into a viewer instead). Calling this
+        again for a connection that already has a color returns that same
+        color without consuming another slot or re-recording `username`."""
         existing = self._colors_by_connection.get(connection)
         if existing is not None:
             return existing
@@ -36,6 +38,10 @@ class SessionManager:
         for color in COLORS_IN_JOIN_ORDER:
             if color not in taken:
                 self._colors_by_connection[connection] = color
+                # Recorded even though release() never clears it - this is
+                # what lets reconnect() reclaim the color later, after the
+                # connection that just got it disconnects.
+                self._username_by_color[color] = username
                 if len(self._colors_by_connection) == len(COLORS_IN_JOIN_ORDER):
                     # One-way latch: once both colors have ever been handed
                     # out, the game is permanently considered started - a
@@ -46,9 +52,24 @@ class SessionManager:
                     self._game_started = True
                 return color
 
-        # TODO: viewers. A 3rd+ connection currently gets no color at all;
-        # server/game_server.py rejects it outright on a None return. A
-        # later task (the "Rooms" slide) should let it spectate instead.
+        return None
+
+    def reconnect(self, connection, username) -> str | None:
+        """Reclaims a color for a returning player: finds a color whose
+        most recent occupant (per `_username_by_color`, which release()
+        never clears) was `username`, AND whose slot is currently vacant -
+        i.e. not held by any live connection right now. Returns that color
+        (after assigning it to `connection`, exactly like assign_color
+        would), or None if no such vacant, matching slot exists.
+
+        Never "steals" a color from a connection that's still actively
+        connected: a color already present as a value in
+        `_colors_by_connection` is never returned here, live or not."""
+        taken = set(self._colors_by_connection.values())
+        for color, recorded_username in self._username_by_color.items():
+            if recorded_username == username and color not in taken:
+                self._colors_by_connection[connection] = color
+                return color
         return None
 
     def is_game_started(self) -> bool:
@@ -68,11 +89,14 @@ class SessionManager:
         return None
 
     def release(self, connection) -> None:
-        """Stops tracking `connection`, freeing its color slot.
+        """Stops tracking `connection`, freeing its color slot for
+        assign_color to hand to a brand-new connection.
 
-        Simplification: there is no reconnection/resume-to-same-color
-        logic yet, so a disconnected player's color becomes immediately
-        available to whoever connects next rather than being reserved for
-        them to reclaim - full disconnect/resign handling is a separate,
-        later task."""
+        Deliberately does NOT clear `_username_by_color` - that's what
+        lets reconnect() reclaim the freed slot for the same username
+        later, within server/disconnect_resign_handler.py's grace period.
+        The slot stays reclaimable via reconnect() (and only via
+        reconnect() - assign_color never consults `_username_by_color`)
+        until someone takes it via a fresh assign_color() call, at which
+        point the recorded username for that color is overwritten."""
         self._colors_by_connection.pop(connection, None)

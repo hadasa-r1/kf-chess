@@ -18,7 +18,11 @@ on_rejected since a bad login and a full game are different failures a
 client may want to react to differently; a login_success's rating/
 is_new_account is handed to on_login_success; a disconnect_countdown's
 color/seconds_remaining (see server/disconnect_resign_handler.py) is
-handed to on_disconnect_countdown; a room_created/room_joined's room_id
+handed to on_disconnect_countdown; a disconnect_countdown_cancelled's
+color is handed to on_disconnect_countdown_cancelled (see
+server/disconnect_resign_handler.py's cancel_countdown, fired when the
+disconnected player reconnects in time - server/session_manager.py's
+reconnect()); a room_created/room_joined's room_id
 is handed to on_room_created/on_room_joined, and a room_not_found calls
 on_room_not_found() with no arguments (see server/room_registry.py,
 server/game_session.py for what creates/finds a room); a viewer_assigned
@@ -55,8 +59,8 @@ def deserialize_snapshot(payload):
 class NetworkClient:
     def __init__(self, connection, on_frame_update, on_remote_event=None,
                  on_assigned_color=None, on_rejected=None, on_login_rejected=None, on_login_success=None,
-                 on_disconnect_countdown=None, on_room_created=None, on_room_joined=None,
-                 on_room_not_found=None, on_viewer_assigned=None):
+                 on_disconnect_countdown=None, on_disconnect_countdown_cancelled=None, on_room_created=None,
+                 on_room_joined=None, on_room_not_found=None, on_viewer_assigned=None):
         self._connection = connection
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -65,6 +69,7 @@ class NetworkClient:
         self._on_login_rejected = on_login_rejected
         self._on_login_success = on_login_success
         self._on_disconnect_countdown = on_disconnect_countdown
+        self._on_disconnect_countdown_cancelled = on_disconnect_countdown_cancelled
         self._on_room_created = on_room_created
         self._on_room_joined = on_room_joined
         self._on_room_not_found = on_room_not_found
@@ -131,6 +136,14 @@ class NetworkClient:
                         self._on_disconnect_countdown(payload["color"], payload["seconds_remaining"])
                     except KeyError as error:
                         logger.warning("Dropping malformed disconnect_countdown message %r: %s", message, error)
+            elif message_type == "disconnect_countdown_cancelled":
+                if self._on_disconnect_countdown_cancelled is not None:
+                    try:
+                        self._on_disconnect_countdown_cancelled(payload["color"])
+                    except KeyError as error:
+                        logger.warning(
+                            "Dropping malformed disconnect_countdown_cancelled message %r: %s", message, error,
+                        )
             elif message_type == "room_created":
                 if self._on_room_created is not None:
                     try:

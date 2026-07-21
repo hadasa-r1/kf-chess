@@ -72,8 +72,9 @@ class _NetworkThread:
     """
 
     def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected,
-                 on_login_rejected, on_login_success, on_disconnect_countdown, on_room_created,
-                 on_room_joined, on_room_not_found, on_viewer_assigned):
+                 on_login_rejected, on_login_success, on_disconnect_countdown,
+                 on_disconnect_countdown_cancelled, on_room_created, on_room_joined, on_room_not_found,
+                 on_viewer_assigned):
         self._uri = uri
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -82,6 +83,7 @@ class _NetworkThread:
         self._on_login_rejected = on_login_rejected
         self._on_login_success = on_login_success
         self._on_disconnect_countdown = on_disconnect_countdown
+        self._on_disconnect_countdown_cancelled = on_disconnect_countdown_cancelled
         self._on_room_created = on_room_created
         self._on_room_joined = on_room_joined
         self._on_room_not_found = on_room_not_found
@@ -131,7 +133,9 @@ class _NetworkThread:
                 connection, on_frame_update=self._on_frame_update, on_remote_event=self._on_remote_event,
                 on_assigned_color=self._on_assigned_color, on_rejected=self._on_rejected,
                 on_login_rejected=self._on_login_rejected, on_login_success=self._on_login_success,
-                on_disconnect_countdown=self._on_disconnect_countdown, on_room_created=self._on_room_created,
+                on_disconnect_countdown=self._on_disconnect_countdown,
+                on_disconnect_countdown_cancelled=self._on_disconnect_countdown_cancelled,
+                on_room_created=self._on_room_created,
                 on_room_joined=self._on_room_joined, on_room_not_found=self._on_room_not_found,
                 on_viewer_assigned=self._on_viewer_assigned,
             )
@@ -485,6 +489,7 @@ def main(server_uri=None, config=settings):
         on_assigned_color=connection_state.on_assigned_color, on_rejected=connection_state.on_rejected,
         on_login_rejected=connection_state.on_login_rejected, on_login_success=connection_state.on_login_success,
         on_disconnect_countdown=disconnect_countdown_state.update,
+        on_disconnect_countdown_cancelled=lambda color: disconnect_countdown_state.clear(),
         on_room_created=connection_state.on_room_created, on_room_joined=connection_state.on_room_joined,
         on_room_not_found=connection_state.on_room_not_found,
         on_viewer_assigned=connection_state.on_viewer_assigned,

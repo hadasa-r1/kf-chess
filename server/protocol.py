@@ -228,6 +228,16 @@ def serialize_disconnect_countdown(color, seconds_remaining):
     return {"type": "disconnect_countdown", "color": color, "seconds_remaining": seconds_remaining}
 
 
+def serialize_disconnect_countdown_cancelled(color):
+    """Broadcast once a disconnected player's countdown is cancelled
+    because they reconnected in time (see
+    server/disconnect_resign_handler.py's cancel_countdown) - `color` is
+    the RECONNECTED player's color, mirroring serialize_disconnect_countdown's
+    own `color` convention, so a client can clear its countdown overlay and
+    unblock input the same way it displayed/locked on the original message."""
+    return {"type": "disconnect_countdown_cancelled", "color": color}
+
+
 def serialize_room_created(room_id):
     """Sent after a "room"/"create" command succeeds - `room_id` is what
     a second player passes back as "room_name" in a "room"/"join" command

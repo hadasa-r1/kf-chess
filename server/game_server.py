@@ -29,7 +29,18 @@ kicks off that room's DisconnectResignHandler as a background task,
 giving them a 20-second grace period before publishing a real
 GameEndedEvent on that room's own bus - reusing that room's
 EventBroadcastHandler/RatingUpdateHandler rather than a separate resign
-path. There is no reconnection support yet.
+path.
+
+If that same username reconnects (via a "room"/"join" naming the same
+room_id) before the grace period elapses, SessionManager.reconnect()
+hands them their old color back - checked before the ordinary
+assign_color/viewer logic, but only on a "join" (never on "create",
+which is always a brand-new room by definition) - and the room's
+DisconnectResignHandler.cancel_countdown(color) stops the pending
+resign timer and tells the still-connected opponent to clear their
+countdown overlay. From there on, a reconnected player proceeds exactly
+like a fresh one: same assigned_color message, same PlayerScopedController
+construction, same message loop.
 
 A 3rd+ connection to an already-full room becomes a viewer instead of
 being turned away: it's registered with an inert ViewerController (see
@@ -80,6 +91,31 @@ async def _forward_commands(messages, controller):
             controller.jump(command.x, command.y)
 
 
+async def _run_as_player(connection, messages, connection_manager, session_manager, session, color):
+    """The message loop shared by a fresh player (assign_color) and a
+    reconnecting one (reconnect) - both end up here with nothing left to
+    do but build the same PlayerScopedController and forward commands
+    until disconnect, which always starts a fresh disconnect-resign
+    countdown for `color`, whether or not this particular connection was
+    itself a reconnection."""
+    controller = PlayerScopedController(
+        Controller(engine=session.engine, board_mapper=session.board_mapper),
+        color, session.board, session.board_mapper, session_manager.is_game_started,
+    )
+    connection_manager.register(connection, controller)
+    try:
+        await _forward_commands(messages, controller)
+    finally:
+        # Slot/registration are freed immediately, exactly as before -
+        # only the game-end decision is delayed, via a background
+        # task started *after* unregistering, so its broadcast
+        # naturally reaches only whoever's still connected in this
+        # room (see server/disconnect_resign_handler.py).
+        connection_manager.unregister(connection)
+        session_manager.release(connection)
+        asyncio.create_task(session.disconnect_resign_handler.start_countdown(color))
+
+
 async def _handle_connection(connection, room_registry, user_registry, user_store):
     # A connection's very first message must be a login - checked here,
     # before anything else, by pulling one message off the same async
@@ -119,10 +155,13 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
 
         room_command = parse_command(room_message)
         session = None
+        is_join = (
+            isinstance(room_command, RoomCommand) and room_command.action == "join" and bool(room_command.room_name)
+        )
         if isinstance(room_command, RoomCommand) and room_command.action == "create":
             session = room_registry.create_room()
             await connection.send(json.dumps(serialize_room_created(session.room_id)))
-        elif isinstance(room_command, RoomCommand) and room_command.action == "join" and room_command.room_name:
+        elif is_join:
             session = room_registry.get_room(room_command.room_name)
             if session is None:
                 await connection.send(json.dumps(serialize_room_not_found(room_command.room_name)))
@@ -137,7 +176,20 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
         session_manager = session.session_manager
         connection_manager = session.connection_manager
 
-        color = session_manager.assign_color(connection)
+        # A reconnection only ever makes sense on a "join" (a "create" is
+        # always a brand-new room, with nothing to reconnect to) - checked
+        # BEFORE the ordinary assign_color/viewer logic below, which is
+        # left completely unchanged for the "not reconnecting" case.
+        color = session_manager.reconnect(connection, username) if is_join else None
+        if color is not None:
+            await connection.send(json.dumps(serialize_assigned_color(color)))
+            disconnect_resign_handler = getattr(session, "disconnect_resign_handler", None)
+            if disconnect_resign_handler is not None:
+                await disconnect_resign_handler.cancel_countdown(color)
+            await _run_as_player(connection, messages, connection_manager, session_manager, session, color)
+            return
+
+        color = session_manager.assign_color(connection, username)
         if color is None:
             # The room already has both "w" and "b" - this connection
             # becomes a viewer instead of being turned away: an inert
@@ -161,22 +213,7 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
             return
 
         await connection.send(json.dumps(serialize_assigned_color(color)))
-        controller = PlayerScopedController(
-            Controller(engine=session.engine, board_mapper=session.board_mapper),
-            color, session.board, session.board_mapper, session_manager.is_game_started,
-        )
-        connection_manager.register(connection, controller)
-        try:
-            await _forward_commands(messages, controller)
-        finally:
-            # Slot/registration are freed immediately, exactly as before -
-            # only the game-end decision is delayed, via a background
-            # task started *after* unregistering, so its broadcast
-            # naturally reaches only whoever's still connected in this
-            # room (see server/disconnect_resign_handler.py).
-            connection_manager.unregister(connection)
-            session_manager.release(connection)
-            asyncio.create_task(session.disconnect_resign_handler.start_countdown(color))
+        await _run_as_player(connection, messages, connection_manager, session_manager, session, color)
     finally:
         user_registry.logout(connection)
 

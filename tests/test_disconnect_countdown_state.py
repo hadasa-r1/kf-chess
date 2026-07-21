@@ -22,3 +22,20 @@ def test_a_later_update_overwrites_the_previous_one():
     state.update("w", 16)
 
     assert state.latest() == ("w", 16)
+
+
+def test_clear_resets_latest_to_none():
+    state = DisconnectCountdownState()
+    state.update("w", 17)
+
+    state.clear()
+
+    assert state.latest() is None
+
+
+def test_clear_on_a_fresh_instance_does_not_raise():
+    state = DisconnectCountdownState()
+
+    state.clear()  # must not raise
+
+    assert state.latest() is None
