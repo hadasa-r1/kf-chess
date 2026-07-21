@@ -29,13 +29,13 @@ class _FakeController:
         self.jumps.append((x, y))
 
 
-def _make(assigned_color, selected=None):
+def _make(assigned_color, selected=None, is_game_started=lambda: True):
     rows = [["wR", ".", "bP"], [".", ".", "."], [".", ".", "."]]
     board = Board(rows)
     mapper = BoardMapper(board, cell_size=100)
     controller = _FakeController()
     controller.selected = selected
-    scoped = PlayerScopedController(controller, assigned_color, board, mapper)
+    scoped = PlayerScopedController(controller, assigned_color, board, mapper, is_game_started)
     return scoped, controller
 
 
@@ -116,7 +116,7 @@ def test_selected_property_delegates_to_the_wrapped_controller():
     assert scoped.selected == (3, 3)
 
 
-def _make_real(rows, assigned_color):
+def _make_real(rows, assigned_color, is_game_started=lambda: True):
     """Wraps a REAL Controller/GameEngine (not the fake above) - needed to
     reproduce the actual bug: Controller._resolve_selection's color-blind
     re-select (see its docstring in game/controller.py) only exists in the
@@ -135,7 +135,7 @@ def _make_real(rows, assigned_color):
     )
     mapper = BoardMapper(board, settings.CELL_SIZE)
     controller = Controller(engine=engine, board_mapper=mapper)
-    scoped = PlayerScopedController(controller, assigned_color, board, mapper)
+    scoped = PlayerScopedController(controller, assigned_color, board, mapper, is_game_started)
     return scoped, controller, engine, board
 
 
@@ -186,3 +186,29 @@ def test_legitimate_second_click_still_moves_own_piece_normally():
 
     assert scoped.selected is None
     assert board.is_empty(0, 0)  # source clears the instant the move starts
+
+
+def test_click_is_dropped_while_the_game_has_not_started():
+    scoped, controller = _make("w", is_game_started=lambda: False)
+
+    scoped.click(0, 0)  # would otherwise select the owned wR at (0,0)
+
+    assert controller.clicks == []
+
+
+def test_jump_is_dropped_while_the_game_has_not_started():
+    scoped, controller = _make("w", is_game_started=lambda: False)
+
+    scoped.jump(0, 0)
+
+    assert controller.jumps == []
+
+
+def test_click_is_forwarded_once_the_game_has_started():
+    # Own-color ownership rules still apply as normal once started - this
+    # just confirms the gate itself isn't permanently stuck closed.
+    scoped, controller = _make("w", is_game_started=lambda: True)
+
+    scoped.click(0, 0)  # (0,0) -> "wR" - owned
+
+    assert controller.clicks == [(0, 0)]

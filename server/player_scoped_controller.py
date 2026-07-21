@@ -20,27 +20,46 @@ landed on a cell the connection doesn't own.
 This is a connection-permission concern layered on top of Controller, not
 baked into it - local hotseat play (main_gui.py) uses a plain Controller
 with no such restriction, exactly as before.
+
+Also enforces "wait for your opponent before the game begins": click()/
+jump() are both silently dropped, same treatment as an ownership
+violation, for as long as the injected `is_game_started` callable returns
+False - a plain no-argument callable (rather than a typing.Protocol,
+since it's a single boolean-returning check, not a multi-method
+interface like bus_handlers/protocols.py's SoundPlayer/AnimationTrigger)
+so this class stays decoupled from the concrete SessionManager it's
+usually backed by (see server/session_manager.py's is_game_started - a
+one-way latch, not a live "are both slots full" count, so a later
+mid-game disconnect never re-blocks the remaining player).
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 
 class PlayerScopedController:
-    def __init__(self, controller, assigned_color, board, board_mapper):
+    def __init__(self, controller, assigned_color, board, board_mapper, is_game_started: Callable[[], bool]):
         self._controller = controller
         self._assigned_color = assigned_color
         self._board = board
         self._mapper = board_mapper
+        self._is_game_started = is_game_started
 
     @property
     def selected(self):
         return self._controller.selected
 
     def click(self, x, y):
+        if not self._is_game_started():
+            logger.debug(
+                "PlayerScopedController: rejecting click - game hasn't started (waiting for opponent)",
+            )
+            return
+
         if self._controller.selected is None:
             cell = self._mapper.pixel_to_cell(x, y)
             if cell is not None and not self._owns_piece_at(cell):
@@ -68,6 +87,12 @@ class PlayerScopedController:
             self._controller.deselect()
 
     def jump(self, x, y):
+        if not self._is_game_started():
+            logger.debug(
+                "PlayerScopedController: rejecting jump - game hasn't started (waiting for opponent)",
+            )
+            return
+
         # TODO: verify jump needs the same ownership check. GameEngine.
         # request_jump has no color concept at all (it only checks
         # busy/on-cooldown/empty - see game/engine.py) - forwarding

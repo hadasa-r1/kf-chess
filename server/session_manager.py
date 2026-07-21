@@ -21,6 +21,7 @@ COLORS_IN_JOIN_ORDER = ("w", "b")
 class SessionManager:
     def __init__(self):
         self._colors_by_connection = {}
+        self._game_started = False
 
     def assign_color(self, connection) -> str | None:
         """Returns "w" for the 1st connection ever given a slot, "b" for
@@ -35,12 +36,26 @@ class SessionManager:
         for color in COLORS_IN_JOIN_ORDER:
             if color not in taken:
                 self._colors_by_connection[connection] = color
+                if len(self._colors_by_connection) == len(COLORS_IN_JOIN_ORDER):
+                    # One-way latch: once both colors have ever been handed
+                    # out, the game is permanently considered started - a
+                    # later release() (e.g. a disconnect) must NEVER flip
+                    # this back, since the remaining player must not become
+                    # blocked again mid-game (see is_game_started below,
+                    # and PlayerScopedController's use of it).
+                    self._game_started = True
                 return color
 
         # TODO: viewers. A 3rd+ connection currently gets no color at all;
         # server/game_server.py rejects it outright on a None return. A
         # later task (the "Rooms" slide) should let it spectate instead.
         return None
+
+    def is_game_started(self) -> bool:
+        """True forever, once both "w" and "b" have ever been assigned -
+        deliberately NOT "are both slots currently occupied" (that would
+        re-block the remaining player after any mid-game disconnect)."""
+        return self._game_started
 
     def connection_for(self, color) -> object | None:
         """Reverse lookup: which connection (if any) currently holds

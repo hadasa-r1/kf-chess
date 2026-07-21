@@ -68,3 +68,38 @@ def test_connection_for_reflects_a_release():
     manager.release("conn-1")
 
     assert manager.connection_for("w") is None
+
+
+def test_is_game_started_is_false_right_after_construction():
+    manager = SessionManager()
+
+    assert manager.is_game_started() is False
+
+
+def test_is_game_started_is_false_after_only_one_assign_color_call():
+    manager = SessionManager()
+
+    manager.assign_color("conn-1")  # w
+
+    assert manager.is_game_started() is False
+
+
+def test_is_game_started_is_true_once_both_colors_have_been_assigned():
+    manager = SessionManager()
+    manager.assign_color("conn-1")  # w
+
+    manager.assign_color("conn-2")  # b
+
+    assert manager.is_game_started() is True
+
+
+def test_is_game_started_stays_true_after_a_later_release():
+    # One-way latch: a mid-game disconnect (release()) must never flip
+    # this back to False, so the remaining player is never re-blocked.
+    manager = SessionManager()
+    manager.assign_color("conn-1")  # w
+    manager.assign_color("conn-2")  # b
+
+    manager.release("conn-1")
+
+    assert manager.is_game_started() is True

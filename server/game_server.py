@@ -129,7 +129,7 @@ async def _handle_connection(connection, room_registry, user_registry, user_stor
         await connection.send(json.dumps(serialize_assigned_color(color)))
         controller = PlayerScopedController(
             Controller(engine=session.engine, board_mapper=session.board_mapper),
-            color, session.board, session.board_mapper,
+            color, session.board, session.board_mapper, session_manager.is_game_started,
         )
         connection_manager.register(connection, controller)
         try:

@@ -96,24 +96,32 @@ def test_client_receives_a_frame_update_with_an_in_flight_move(tmp_path):
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 1}") as connection:
-                await _login_and_create_room(connection)
-                # Board's starting position (boards/start.txt) has a white
-                # pawn at row 6, col 0 - pixel (0, 600) at CELL_SIZE=100 -
-                # moving it two squares forward keeps a move in flight long
-                # enough for the very next broadcast to catch it.
-                await connection.send(json.dumps({"type": "click", "x": 0, "y": 600}))
-                await connection.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                room_id = await _login_and_create_room(connection)
+                # A second player must join before any move is allowed
+                # (PlayerScopedController's is_game_started gate) - see
+                # tests/test_player_scoped_controller.py /
+                # test_session_manager.py for that behavior in isolation.
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 1}") as opponent:
+                    await _login_and_join_room(opponent, room_id, "opponent")
 
-                payload = None
-                for _ in range(20):
-                    payload = await _next_message_of_type(connection, "frame_update")
-                    if payload["moves"]:
-                        break
+                    # Board's starting position (boards/start.txt) has a
+                    # white pawn at row 6, col 0 - pixel (0, 600) at
+                    # CELL_SIZE=100 - moving it two squares forward keeps a
+                    # move in flight long enough for the next broadcast to
+                    # catch it.
+                    await connection.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                    await connection.send(json.dumps({"type": "click", "x": 0, "y": 400}))
 
-                assert payload is not None
-                assert payload["moves"], "expected at least one in-flight move to be broadcast"
-                move = payload["moves"][0]
-                assert set(move.keys()) == {"piece", "start", "end", "arrival"}
+                    payload = None
+                    for _ in range(20):
+                        payload = await _next_message_of_type(connection, "frame_update")
+                        if payload["moves"]:
+                            break
+
+                    assert payload is not None
+                    assert payload["moves"], "expected at least one in-flight move to be broadcast"
+                    move = payload["moves"][0]
+                    assert set(move.keys()) == {"piece", "start", "end", "arrival"}
         finally:
             server_task.cancel()
             try:
@@ -135,11 +143,16 @@ def test_client_receives_a_move_made_broadcast_distinct_from_frame_update(tmp_pa
         await asyncio.sleep(0.2)  # let the server finish binding before connecting
         try:
             async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 2}") as connection:
-                await _login_and_create_room(connection)
-                await connection.send(json.dumps({"type": "click", "x": 0, "y": 600}))
-                await connection.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                room_id = await _login_and_create_room(connection)
+                # A second player must join before any move is allowed
+                # (PlayerScopedController's is_game_started gate).
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 2}") as opponent:
+                    await _login_and_join_room(opponent, room_id, "opponent")
 
-                payload = await _next_message_of_type(connection, "move_made")
+                    await connection.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                    await connection.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+
+                    payload = await _next_message_of_type(connection, "move_made")
 
             assert payload["color"] == "w"
             assert payload["piece"] == "wP"
@@ -490,11 +503,18 @@ def test_two_created_rooms_are_independent_games(tmp_path):
 
                     assert first_room_id != second_room_id
 
-                    # Move white's pawn in the FIRST room only.
-                    await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
-                    await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
-                    move_payload = await _next_message_of_type(first, "move_made")
-                    assert move_payload["start"] == [6, 0]
+                    # A second player must join the FIRST room before any
+                    # move is allowed there (PlayerScopedController's
+                    # is_game_started gate) - the second room stays alone,
+                    # which is fine since nothing ever moves in it.
+                    async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 13}") as first_opponent:
+                        await _login_and_join_room(first_opponent, first_room_id, "carol")
+
+                        # Move white's pawn in the FIRST room only.
+                        await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                        await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+                        move_payload = await _next_message_of_type(first, "move_made")
+                        assert move_payload["start"] == [6, 0]
 
                     # The SECOND room's own frame_update must still show
                     # its own starting position untouched - (6, 0) still
@@ -564,6 +584,57 @@ def test_joining_an_unknown_room_gets_room_not_found_and_is_disconnected(tmp_pat
                 # it must never receive an assigned_color.
                 with pytest.raises(Exception):
                     await asyncio.wait_for(connection.recv(), timeout=2)
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_a_lone_first_player_cannot_move_until_a_second_player_joins(tmp_path):
+    # Real end-to-end proof of PlayerScopedController's is_game_started
+    # gate (backed by SessionManager's one-way latch): alone in a room, a
+    # click/move sequence must be silently dropped; once a second player
+    # joins that same room, the identical sequence must succeed normally.
+    async def scenario():
+        server_task = asyncio.create_task(
+            run_server(host=TEST_HOST, port=TEST_PORT + 16, user_db_path=str(tmp_path / "users.db")),
+        )
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 16}") as first:
+                room_id = await _login_and_create_room(first, "alice")
+                first_assigned = await _next_message_of_type(first, "assigned_color")
+                assert first_assigned["color"] == "w"
+
+                # Alone in the room - white pawn at row 6, col 0 -> pixel
+                # (0, 600); this select+move sequence must be dropped
+                # entirely, so the pawn never actually moves.
+                await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+
+                frame_payload = await _next_message_of_type(first, "frame_update")
+                assert frame_payload["selected"] is None
+                assert frame_payload["cells"][6][0] == "wP"
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 16}") as second:
+                    await _login_and_join_room(second, room_id, "bob")
+                    second_assigned = await _next_message_of_type(second, "assigned_color")
+                    assert second_assigned["color"] == "b"
+
+                    # Now that both players are present, the SAME sequence
+                    # from connection 1 must succeed.
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 600}))
+                    await first.send(json.dumps({"type": "click", "x": 0, "y": 400}))
+
+                    move_payload = await _next_message_of_type(first, "move_made")
+                    assert move_payload["color"] == "w"
+                    assert move_payload["piece"] == "wP"
+                    assert move_payload["start"] == [6, 0]
+                    assert move_payload["end"] == [4, 0]
         finally:
             server_task.cancel()
             try:
