@@ -4,20 +4,24 @@ Three responsibilities: sending a login command (username+password, must
 be the very first outgoing message - see server/game_server.py's login
 gate) and click/jump commands to the server, and receiving incoming
 messages and dispatching each by its "type": a frame_update is decoded
-into a FrameState and handed to on_frame_update; a score_changed/move_made
-is handed, undecoded, to on_remote_event (whose job - see
-client_net/remote_event_source.py - is turning it back into a real bus
-event); an assigned_color's color string is handed to on_assigned_color;
-a rejected's reason string is handed to on_rejected (see
+into a FrameState and handed to on_frame_update; a score_changed/
+move_made/invalid_move/game_started/game_ended is handed, undecoded, to
+on_remote_event (whose job - see client_net/remote_event_source.py - is
+turning it back into a real bus event; RemoteEventSource already handles
+all five, this class just has to actually call it for all five); an
+assigned_color's color string is handed to on_assigned_color; a
+rejected's reason string is handed to on_rejected (see
 server/session_manager.py for what assigns/rejects a connection); a
 login_rejected's reason string (e.g. "wrong_password" - see
 server/user_store.py) is handed to on_login_rejected, distinct from
 on_rejected since a bad login and a full game are different failures a
 client may want to react to differently; a login_success's rating/
-is_new_account is handed to on_login_success. No rendering, no cv2,
-nothing UI-specific - and kept in its own package (never imports from
-server/), since a client process must not depend on the server's
-internals. Never logs a raw password - only ever sends it onward.
+is_new_account is handed to on_login_success; a disconnect_countdown's
+color/seconds_remaining (see server/disconnect_resign_handler.py) is
+handed to on_disconnect_countdown. No rendering, no cv2, nothing
+UI-specific - and kept in its own package (never imports from server/),
+since a client process must not depend on the server's internals. Never
+logs a raw password - only ever sends it onward.
 """
 
 from __future__ import annotations
@@ -45,7 +49,8 @@ def deserialize_snapshot(payload):
 
 class NetworkClient:
     def __init__(self, connection, on_frame_update, on_remote_event=None,
-                 on_assigned_color=None, on_rejected=None, on_login_rejected=None, on_login_success=None):
+                 on_assigned_color=None, on_rejected=None, on_login_rejected=None, on_login_success=None,
+                 on_disconnect_countdown=None):
         self._connection = connection
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -53,6 +58,7 @@ class NetworkClient:
         self._on_rejected = on_rejected
         self._on_login_rejected = on_login_rejected
         self._on_login_success = on_login_success
+        self._on_disconnect_countdown = on_disconnect_countdown
 
     async def send_login(self, username, password):
         await self._connection.send(json.dumps({"type": "login", "username": username, "password": password}))
@@ -82,7 +88,7 @@ class NetworkClient:
                     logger.warning("Dropping malformed frame_update message %r: %s", message, error)
                     continue
                 self._on_frame_update(frame_state)
-            elif message_type in ("score_changed", "move_made"):
+            elif message_type in ("score_changed", "move_made", "invalid_move", "game_started", "game_ended"):
                 if self._on_remote_event is not None:
                     self._on_remote_event(payload)
             elif message_type == "assigned_color":
@@ -103,5 +109,11 @@ class NetworkClient:
                         self._on_login_success(payload["rating"], payload["is_new_account"])
                     except KeyError as error:
                         logger.warning("Dropping malformed login_success message %r: %s", message, error)
+            elif message_type == "disconnect_countdown":
+                if self._on_disconnect_countdown is not None:
+                    try:
+                        self._on_disconnect_countdown(payload["color"], payload["seconds_remaining"])
+                    except KeyError as error:
+                        logger.warning("Dropping malformed disconnect_countdown message %r: %s", message, error)
             else:
                 logger.warning("Dropping message with unrecognized type %r", message_type)

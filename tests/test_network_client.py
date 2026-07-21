@@ -31,11 +31,13 @@ class _RecordingConnection:
         self.sent.append(message)
 
 
-def _run_client(messages, on_frame_update, on_remote_event=None, on_login_rejected=None, on_login_success=None):
+def _run_client(messages, on_frame_update, on_remote_event=None, on_login_rejected=None, on_login_success=None,
+                 on_disconnect_countdown=None):
     connection = _FakeConnection(messages)
     client = NetworkClient(
         connection, on_frame_update=on_frame_update, on_remote_event=on_remote_event,
         on_login_rejected=on_login_rejected, on_login_success=on_login_success,
+        on_disconnect_countdown=on_disconnect_countdown,
     )
     asyncio.run(client.run())
 
@@ -155,5 +157,61 @@ def test_login_success_without_a_callback_is_silently_ignored():
     message = json.dumps({"type": "login_success", "rating": 1200, "is_new_account": True})
 
     _run_client([message], on_frame_update=frame_updates.append)  # no on_login_success - must not raise
+
+    assert frame_updates == []
+
+
+def test_invalid_move_message_is_routed_to_on_remote_event_not_on_frame_update():
+    frame_updates = []
+    remote_events = []
+    message = json.dumps({"type": "invalid_move", "reason": "on_cooldown", "start": [0, 0], "end": [0, 1]})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_remote_event=remote_events.append)
+
+    assert frame_updates == []
+    assert remote_events == [{"type": "invalid_move", "reason": "on_cooldown", "start": [0, 0], "end": [0, 1]}]
+
+
+def test_game_started_message_is_routed_to_on_remote_event_not_on_frame_update():
+    frame_updates = []
+    remote_events = []
+    message = json.dumps({"type": "game_started", "white_player": "w", "black_player": "b"})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_remote_event=remote_events.append)
+
+    assert frame_updates == []
+    assert remote_events == [{"type": "game_started", "white_player": "w", "black_player": "b"}]
+
+
+def test_game_ended_message_is_routed_to_on_remote_event_not_on_frame_update():
+    frame_updates = []
+    remote_events = []
+    message = json.dumps({"type": "game_ended", "winner": "w", "reason": "disconnect_timeout"})
+
+    _run_client([message], on_frame_update=frame_updates.append, on_remote_event=remote_events.append)
+
+    assert frame_updates == []
+    assert remote_events == [{"type": "game_ended", "winner": "w", "reason": "disconnect_timeout"}]
+
+
+def test_disconnect_countdown_message_is_routed_to_on_disconnect_countdown():
+    frame_updates = []
+    countdowns = []
+    message = json.dumps({"type": "disconnect_countdown", "color": "w", "seconds_remaining": 17})
+
+    _run_client(
+        [message], on_frame_update=frame_updates.append,
+        on_disconnect_countdown=lambda color, seconds_remaining: countdowns.append((color, seconds_remaining)),
+    )
+
+    assert frame_updates == []
+    assert countdowns == [("w", 17)]
+
+
+def test_disconnect_countdown_without_a_callback_is_silently_ignored():
+    frame_updates = []
+    message = json.dumps({"type": "disconnect_countdown", "color": "w", "seconds_remaining": 17})
+
+    _run_client([message], on_frame_update=frame_updates.append)  # no on_disconnect_countdown - must not raise
 
     assert frame_updates == []

@@ -404,3 +404,44 @@ def test_reconnecting_with_the_wrong_password_is_rejected(tmp_path):
                 pass
 
     asyncio.run(scenario())
+
+
+def test_a_mid_game_disconnect_counts_down_then_resigns_to_the_other_player(tmp_path):
+    # Real end-to-end proof of the disconnect grace period: white
+    # disconnects, black should see descending disconnect_countdown
+    # broadcasts, then - once the (here, shortened) grace period elapses
+    # with the game still active - a real game_ended broadcast (produced
+    # by the existing EventBroadcastHandler reacting to the
+    # DisconnectResignHandler's GameEndedEvent, not a separate path).
+    async def scenario():
+        server_task = asyncio.create_task(run_server(
+            host=TEST_HOST, port=TEST_PORT + 12, user_db_path=str(tmp_path / "users.db"),
+            disconnect_countdown_seconds=1,
+        ))
+        await asyncio.sleep(0.2)  # let the server finish binding before connecting
+        try:
+            async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 12}") as white:
+                await _login(white, "alice")
+                await _next_message_of_type(white, "assigned_color")
+
+                async with connect(f"ws://{TEST_HOST}:{TEST_PORT + 12}") as black:
+                    await _login(black, "bob")
+                    await _next_message_of_type(black, "assigned_color")
+
+                    await white.close()  # white disconnects mid-game
+
+                    countdown_payload = await _next_message_of_type(black, "disconnect_countdown")
+                    assert countdown_payload["color"] == "w"
+                    assert countdown_payload["seconds_remaining"] == 1
+
+                    game_ended_payload = await _next_message_of_type(black, "game_ended", attempts=40)
+                    assert game_ended_payload["winner"] == "b"
+                    assert game_ended_payload["reason"] == "disconnect_timeout"
+        finally:
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())

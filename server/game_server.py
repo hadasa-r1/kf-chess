@@ -33,6 +33,15 @@ that enforces "you may only select your own color's pieces" on top of
 it, without game/controller.py itself knowing anything about color
 restriction (local hotseat play needs none).
 
+A mid-game disconnect doesn't resign the player immediately: their color
+slot/Controller registration are freed right away (same as always), but
+_handle_connection then kicks off a DisconnectResignHandler
+(server/disconnect_resign_handler.py) as a background task, giving them a
+20-second grace period (broadcast to whoever's left as a countdown)
+before publishing a real GameEndedEvent - reusing EventBroadcastHandler/
+RatingUpdateHandler's existing GameEndedEvent subscriptions rather than a
+separate resign path. There is no reconnection support yet.
+
 No rooms, no matchmaking - later steps.
 """
 
@@ -50,6 +59,7 @@ from game.board_mapper import BoardMapper
 from game.controller import Controller
 from main import _build_game
 from server.connection_manager import ConnectionManager
+from server.disconnect_resign_handler import COUNTDOWN_SECONDS, DisconnectResignHandler
 from server.event_broadcast_handler import EventBroadcastHandler
 from server.player_scoped_controller import PlayerScopedController
 from server.protocol import (
@@ -122,7 +132,7 @@ async def _tick_loop(engine, connection_manager):
 
 
 async def _handle_connection(connection, engine, board, board_mapper, connection_manager, session_manager,
-                              user_registry, user_store):
+                              user_registry, user_store, disconnect_resign_handler):
     # A connection's very first message must be a login - checked here,
     # before color assignment or any click/jump handling, by pulling one
     # message off the same async iterator the rest of the handler uses
@@ -172,16 +182,24 @@ async def _handle_connection(connection, engine, board, board_mapper, connection
                 elif isinstance(command, JumpCommand):
                     controller.jump(command.x, command.y)
         finally:
+            # Slot/registration are freed immediately, exactly as before -
+            # only the game-end decision is delayed, via a background
+            # task started *after* unregistering, so its broadcast
+            # naturally reaches only whoever's still connected (see
+            # server/disconnect_resign_handler.py).
             connection_manager.unregister(connection)
             session_manager.release(connection)
+            asyncio.create_task(disconnect_resign_handler.start_countdown(color))
     finally:
         user_registry.logout(connection)
 
 
-async def run_server(host=HOST, port=PORT, user_db_path=None):
-    # `user_db_path` is overridable (rather than always settings.USER_DB_PATH)
-    # so tests can point it at a throwaway file instead of ever touching the
-    # real one - see tests/test_game_server_integration.py.
+async def run_server(host=HOST, port=PORT, user_db_path=None, disconnect_countdown_seconds=None):
+    # `user_db_path`/`disconnect_countdown_seconds` are overridable (rather
+    # than always settings.USER_DB_PATH / the 20s default) so tests can use
+    # a throwaway file and a short countdown instead of ever touching the
+    # real database or waiting 20 real seconds - see
+    # tests/test_game_server_integration.py.
     engine, _controller, board, bus = _build_game(_load_board_lines(), settings)
     board_mapper = BoardMapper(board, settings.CELL_SIZE)
     connection_manager = ConnectionManager()
@@ -190,11 +208,14 @@ async def run_server(host=HOST, port=PORT, user_db_path=None):
     user_store = UserStore(user_db_path or settings.USER_DB_PATH)
     event_broadcast_handler = EventBroadcastHandler(bus, connection_manager)
     rating_update_handler = RatingUpdateHandler(bus, user_store, session_manager, user_registry)
+    disconnect_resign_handler = DisconnectResignHandler(
+        bus, connection_manager, engine, countdown_seconds=disconnect_countdown_seconds or COUNTDOWN_SECONDS,
+    )
 
     async def handler(connection):
         await _handle_connection(
             connection, engine, board, board_mapper, connection_manager, session_manager,
-            user_registry, user_store,
+            user_registry, user_store, disconnect_resign_handler,
         )
 
     tick_task = asyncio.create_task(_tick_loop(engine, connection_manager))

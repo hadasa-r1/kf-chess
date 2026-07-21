@@ -197,3 +197,12 @@ def serialize_login_success(rating, is_new_account):
     rating and whether they just registered, before color assignment
     even happens (see server/user_store.py, server/game_server.py)."""
     return {"type": "login_success", "rating": rating, "is_new_account": is_new_account}
+
+
+def serialize_disconnect_countdown(color, seconds_remaining):
+    """Broadcast roughly once a second, while a disconnected player's
+    grace period counts down, to whoever is still connected (see
+    server/disconnect_resign_handler.py) - `color` is the DISCONNECTED
+    player's color, not the recipient's, so a client can render "opponent
+    reconnecting in Ns"."""
+    return {"type": "disconnect_countdown", "color": color, "seconds_remaining": seconds_remaining}

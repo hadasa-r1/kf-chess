@@ -41,8 +41,10 @@ from bus_handlers.graphics_animation_trigger import GraphicsAnimationTrigger
 from bus_handlers.move_log_display_state import MoveLogDisplayState
 from bus_handlers.score_display_state import ScoreDisplayState
 from bus_handlers.sound_handler import SoundHandler
+from client_net.disconnect_countdown_state import DisconnectCountdownState
 from client_net.frame_state_cache import FrameStateCache
 from client_net.frame_state_merge import merge_display_data
+from client_net.game_over_state import GameOverState
 from client_net.network_client import NetworkClient
 from client_net.remote_controller import RemoteController
 from client_net.remote_event_source import RemoteEventSource
@@ -65,7 +67,7 @@ class _NetworkThread:
     """
 
     def __init__(self, uri, on_frame_update, on_remote_event, on_assigned_color, on_rejected,
-                 on_login_rejected, on_login_success):
+                 on_login_rejected, on_login_success, on_disconnect_countdown):
         self._uri = uri
         self._on_frame_update = on_frame_update
         self._on_remote_event = on_remote_event
@@ -73,6 +75,7 @@ class _NetworkThread:
         self._on_rejected = on_rejected
         self._on_login_rejected = on_login_rejected
         self._on_login_success = on_login_success
+        self._on_disconnect_countdown = on_disconnect_countdown
         self._loop = None
         self._connection = None
         self._network_client = None
@@ -112,6 +115,7 @@ class _NetworkThread:
                 connection, on_frame_update=self._on_frame_update, on_remote_event=self._on_remote_event,
                 on_assigned_color=self._on_assigned_color, on_rejected=self._on_rejected,
                 on_login_rejected=self._on_login_rejected, on_login_success=self._on_login_success,
+                on_disconnect_countdown=self._on_disconnect_countdown,
             )
             self._ready.set()
             await self._network_client.run()
@@ -214,11 +218,16 @@ def _wait_for_login_rejection(connection_state, timeout_seconds=1.0):
     return False
 
 
-def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
-    # Mirrors main_gui.py's _on_mouse exactly: the displayed frame is
-    # [white panel | board | black panel], so raw window pixels need the
-    # left panel's width subtracted before BoardMapper can turn them into
-    # board cells.
+def _on_mouse(controller, disconnect_countdown_state, board_offset_x, event, x, y, flags, param):
+    # Mirrors main_gui.py's _on_mouse, except a click/jump is dropped
+    # entirely while the opponent's disconnect grace period is counting
+    # down (see DisconnectCountdownState) - there's nothing useful to do
+    # with input mid-countdown, and no reconnection concept to resume
+    # into. The displayed frame is [white panel | board | black panel],
+    # so raw window pixels need the left panel's width subtracted before
+    # BoardMapper can turn them into board cells.
+    if disconnect_countdown_state.latest() is not None:
+        return
     board_x = x - board_offset_x
     if event == cv2.EVENT_LBUTTONDOWN:
         controller.click(board_x, y)
@@ -226,7 +235,8 @@ def _on_mouse(controller, board_offset_x, event, x, y, flags, param):
         controller.jump(board_x, y)
 
 
-def _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state, config):
+def _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state,
+               disconnect_countdown_state, game_over_state, config):
     """Owns the cv2 window, mouse handling, and the frame-timing loop -
     mirrors main_gui.py's _run_loop, except each frame's data comes from
     merge_display_data(frame_cache.latest(), ...) instead of a live
@@ -234,7 +244,15 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
     the first frame_update arrives (there's no local Board to read
     width/height from before then - meanwhile a simple "Connecting..."
     placeholder is shown, or a "rejected" one if the server turned us
-    away as a 3rd+ connection - see server/session_manager.py)."""
+    away as a 3rd+ connection - see server/session_manager.py).
+
+    Each frame also checks game_over_state (populated by a real GameEndedEvent
+    - either a server-forwarded in-engine ending, e.g. checkmate, or a
+    disconnect-timeout resignation - see client_net/game_over_state.py)
+    alongside the existing frame_state.snapshot.game_over check, and draws
+    a disconnect_countdown_state overlay (see
+    client_net/disconnect_countdown_state.py) whenever the opponent's
+    grace-period countdown is active."""
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     while frame_cache.latest() is None:
@@ -271,7 +289,9 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
 
     cv2.setMouseCallback(
         WINDOW_NAME,
-        lambda event, x, y, flags, param: _on_mouse(controller, ui_config.SIDE_PANEL_WIDTH, event, x, y, flags, param),
+        lambda event, x, y, flags, param: _on_mouse(
+            controller, disconnect_countdown_state, ui_config.SIDE_PANEL_WIDTH, event, x, y, flags, param,
+        ),
     )
 
     last_frame = time.time()
@@ -284,10 +304,34 @@ def _run_loop(network_thread, connection_state, frame_cache, score_state, move_l
         frame_state = merge_display_data(frame_cache.latest(), score_state, move_log_state)
         frame = renderer.render(frame_state)
 
-        if frame_state.snapshot.game_over:
+        # One combined check, rather than keeping frame_state.snapshot.game_over
+        # and game_over_state as two separate branches: a real in-engine
+        # ending (e.g. checkmate) sets both, but a disconnect-timeout
+        # resignation only ever sets game_over_state (the server-side
+        # engine's own game_over flag is untouched by that path - see
+        # server/disconnect_resign_handler.py) - a single branch handles
+        # both without duplicating the hold-and-wait-for-keypress logic.
+        game_over_info = game_over_state.latest()
+        if frame_state.snapshot.game_over or game_over_info is not None:
+            if game_over_info is not None:
+                winner, reason = game_over_info
+                winner_label = {"w": "White", "b": "Black"}.get(winner, winner)
+                cv2.putText(
+                    frame.img, f"Game Over - {winner_label} wins ({reason})",
+                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2,
+                )
             cv2.imshow(WINDOW_NAME, frame.img)
             cv2.waitKey(0)
             break
+
+        countdown_info = disconnect_countdown_state.latest()
+        if countdown_info is not None:
+            countdown_color, seconds_remaining = countdown_info
+            countdown_label = {"w": "White", "b": "Black"}.get(countdown_color, countdown_color)
+            cv2.putText(
+                frame.img, f"{countdown_label} disconnected - resigning in {seconds_remaining}s",
+                (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2,
+            )
 
         cv2.imshow(WINDOW_NAME, frame.img)
         key = cv2.waitKey(1) & 0xFF
@@ -311,6 +355,8 @@ def main(server_uri=None, config=settings):
     remote_event_source = RemoteEventSource(local_bus)
     score_state = ScoreDisplayState(local_bus)
     move_log_state = MoveLogDisplayState(local_bus)
+    disconnect_countdown_state = DisconnectCountdownState()
+    game_over_state = GameOverState(local_bus)
     # Kept in a local variable for main()'s whole lifetime (mirroring
     # main_gui.py's _build_bus_handlers) - EventBus.subscribe holds a plain
     # reference to the bound method, but nothing keeps the handler object
@@ -323,13 +369,17 @@ def main(server_uri=None, config=settings):
         uri, on_frame_update=frame_cache.update, on_remote_event=remote_event_source.handle_message,
         on_assigned_color=connection_state.on_assigned_color, on_rejected=connection_state.on_rejected,
         on_login_rejected=connection_state.on_login_rejected, on_login_success=connection_state.on_login_success,
+        on_disconnect_countdown=disconnect_countdown_state.update,
     )
     network_thread.start()
     network_thread.send_login(username, password)
 
     try:
         if not _wait_for_login_rejection(connection_state):
-            _run_loop(network_thread, connection_state, frame_cache, score_state, move_log_state, config)
+            _run_loop(
+                network_thread, connection_state, frame_cache, score_state, move_log_state,
+                disconnect_countdown_state, game_over_state, config,
+            )
     finally:
         network_thread.stop()
 
